@@ -48,7 +48,7 @@ Access the pretrained model for the Cityscapes dataset via the link provided bel
 
 |Dataset       |Download link     |
 |:-------------|:-----------------|
-|Cityscapes|[Checkpoint](https://drive.google.com/file/d/1OTVp4KtGT75PRwWHmbtFRlTzpHjJwmPQ/view?usp=sharing)|
+|Cityscapes|[Checkpoint](https://drive.google.com/file/d/1-682faIrAB3b6QDBSkEY54e_Ev6uELlN/view?usp=drive_link)|
 
 
 ## Evaluation
