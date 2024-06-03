@@ -54,6 +54,7 @@ class TrainLoop:
         schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
+        save_dir=""
     ):
         self.model = model
         self.diffusion = diffusion
@@ -80,6 +81,7 @@ class TrainLoop:
         self.schedule_sampler = schedule_sampler or UniformSampler(diffusion)
         self.weight_decay = weight_decay
         self.lr_anneal_steps = lr_anneal_steps
+        self.save_dir = save_dir if save_dir else get_blob_logdir()
 
         self.step = 0
         self.resume_step = 0
@@ -286,7 +288,7 @@ class TrainLoop:
                 else:
                     filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
                 
-                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                with bf.BlobFile(bf.join(self.save_dir, filename), "wb") as f:
                     th.save(state_dict, f)
 
         save_checkpoint(0, self.mp_trainer.master_params)
@@ -295,7 +297,7 @@ class TrainLoop:
 
         if dist.get_rank() == 0:
             with bf.BlobFile(
-                bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
+                bf.join(self.save_dir, f"opt{(self.step+self.resume_step):06d}.pt"),
                 "wb",
             ) as f:
                 th.save(self.opt.state_dict(), f)
@@ -310,12 +312,12 @@ class TrainLoop:
             files_to_keep.append(f"ema_{rate}_{(self.step+self.resume_step):06d}.pt")
             
         # get the list of files in the directory
-        files_in_dir = os.listdir(get_blob_logdir())
+        files_in_dir = os.listdir(self.save_dir)
         # delete all the files that are not in the list of files to keep
         logger.log("Deleting old checkpoints...")
         for file in files_in_dir:
             if file not in files_to_keep:
-                os.remove(os.path.join(get_blob_logdir(), file))
+                os.remove(os.path.join(self.save_dir, file))
 
     def preprocess_input(self, cond_):#, compressed):
         # move to GPU and change data types
