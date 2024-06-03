@@ -9,7 +9,7 @@ import numpy as np
 ##################
 #### Parameters
 ##################
-relust_path = "path/to/Result"
+result_path = "path/to/Result"
 internimage_path = "path/to/InternImage"
 
 
@@ -18,24 +18,24 @@ internimage_path = "path/to/InternImage"
 ##################
 if __name__ == '__main__':
     ##### evaluate the BPP for the coarse
-    BPP_coarse = mfunc.calculate_bpp(os.path.join(relust_path, "compressed"), ext=".bpg")
+    BPP_coarse = mfunc.calculate_bpp(os.path.join(result_path, "compressed"), ext=".bpg")
     
     ##### evaluate the BPP for the input SSM
-    mfunc.flif_compression(f"{relust_path}/labels", f"{relust_path}/labels")
-    BPP_SSM = mfunc.calculate_bpp(os.path.join(relust_path, "labels"), ext=".flif")
+    mfunc.flif_compression(f"{result_path}/labels", f"{result_path}/labels")
+    BPP_SSM = mfunc.calculate_bpp(os.path.join(result_path, "labels"), ext=".flif")
     
     ##### generate the SSM with internimage
-    command = f"cd {internimage_path} && python3 segmentation/image_demo.py {relust_path}/samples segmentation/configs/cityscapes/upernet_internimage_xl_512x1024_160k_mapillary2cityscapes.py segmentation/checkpoint_dir/seg/upernet_internimage_xl_512x1024_160k_mapillary2cityscapes.pth --out {relust_path}/sem_generated"
+    command = f"cd {internimage_path} && python3 segmentation/image_demo.py {result_path}/samples segmentation/configs/cityscapes/upernet_internimage_xl_512x1024_160k_mapillary2cityscapes.py segmentation/checkpoint_dir/seg/upernet_internimage_xl_512x1024_160k_mapillary2cityscapes.pth --out {result_path}/sem_generated"
     mfunc.run_command_with_conda_env("internimage", command)
     
     ##### evaluate the mIoU 
-    true_SSM = mfunc.get_semantic_maps(os.path.join(relust_path, "labels/"), interimage=False)
-    generated_SSM = mfunc.get_semantic_maps(os.path.join(relust_path, "sem_generated/"), interimage=True)
+    true_SSM = mfunc.get_semantic_maps(os.path.join(result_path, "labels/"), interimage=False)
+    generated_SSM = mfunc.get_semantic_maps(os.path.join(result_path, "sem_generated/"), interimage=True)
     mIoU = mfunc.calculate_mIoU(true_SSM, generated_SSM)
     
     ##### evaluate the FID
-    true_img_path = os.path.join(relust_path, "images/")
-    sampled_img_path = os.path.join(relust_path, "samples/")
+    true_img_path = os.path.join(result_path, "images/")
+    sampled_img_path = os.path.join(result_path, "samples/")
     fid = mfunc.calculate_FID(true_img_path, sampled_img_path)
     
     ##### print the results

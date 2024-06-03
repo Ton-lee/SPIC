@@ -1,6 +1,8 @@
 import copy
 import functools
 import os
+import time
+
 import cv2
 
 import blobfile as bf
@@ -178,6 +180,7 @@ class TrainLoop:
                 self.opt.param_groups[0]['lr'] = self.lr
 
     def run_loop(self):
+        temp_folder = "/home/Users/dqy/Projects/SPIC/temp/"
         while (
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
@@ -191,10 +194,13 @@ class TrainLoop:
                     image = interpolate(batch, (self.small_size, self.large_size), mode="area") 
                     bpg_image_list = []
                     for i in range(image.shape[0]):
-                        cv2.imwrite("compressed_bpg.png", cv2.cvtColor((image[i].cpu().numpy().transpose(1, 2, 0)+1)/2.*255.0, cv2.COLOR_BGR2RGB))
-                        os.system(f"bpgenc -c ycbcr -q  {int(self.compression_level)} -o compressed_bpg.bpg compressed_bpg.png")
-                        os.system("bpgdec -o compressed_bpg.png compressed_bpg.bpg")
-                        decompressed_image = cv2.imread("compressed_bpg.png")
+                        timestamp = time.time()
+                        cv2.imwrite(f"{temp_folder}compressed_bpg#{timestamp}.png", cv2.cvtColor((image[i].cpu().numpy().transpose(1, 2, 0)+1)/2.*255.0, cv2.COLOR_BGR2RGB))
+                        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(self.compression_level)} -o {temp_folder}compressed_bpg#{timestamp}.bpg {temp_folder}compressed_bpg#{timestamp}.png")
+                        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg#{timestamp}.png {temp_folder}compressed_bpg#{timestamp}.bpg")
+                        decompressed_image = cv2.imread(f"{temp_folder}compressed_bpg#{timestamp}.png")
+                        os.remove(f"{temp_folder}compressed_bpg#{timestamp}.png")
+                        os.remove(f"{temp_folder}compressed_bpg#{timestamp}.bpg")
                         decompressed_image = cv2.cvtColor(decompressed_image, cv2.COLOR_BGR2RGB)
                         tensor_image = (th.from_numpy(decompressed_image).permute(2, 0, 1)*2/255.0)-1
                         bpg_image_list.append(tensor_image)
@@ -290,7 +296,8 @@ class TrainLoop:
                 
                 with bf.BlobFile(bf.join(self.save_dir, filename), "wb") as f:
                     th.save(state_dict, f)
-
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
         save_checkpoint(0, self.mp_trainer.master_params)
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)

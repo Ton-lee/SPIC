@@ -5,6 +5,7 @@ numpy array. This can be used to produce samples for FID evaluation.
 
 import argparse
 import os
+import time
 
 from PIL import Image
 from io import BytesIO
@@ -159,6 +160,7 @@ def gaussian_kernel(kernel_size=3, sigma=1.0):
 
 
 def preprocess_input(image, comp_, num_classes, large_size, small_size, compression_type, compression_level):
+    temp_folder = "/home/Users/dqy/Projects/SPIC/temp/"
     # move to GPU and change data types
     comp_['label'] = comp_['label'].long()
 
@@ -193,10 +195,13 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
             batch_size, _, new_height, new_width = image.shape
             bpg_image_list = []
             for i in range(batch_size):
-                cv2.imwrite("compressed_bpg.png", cv2.cvtColor(image[i].cpu().numpy().transpose(1,2,0)*255, cv2.COLOR_BGR2RGB))
-                os.system(f"bpgenc -c ycbcr -q  {int(compression_level)} -o compressed_bpg.bpg compressed_bpg.png")
-                os.system("bpgdec -o compressed_bpg.png compressed_bpg.bpg")
-                decompressed_image = cv2.imread("compressed_bpg.png")
+                timestamp = time.time()
+                cv2.imwrite(f"{temp_folder}compressed_bpg#{timestamp}.png", cv2.cvtColor(image[i].cpu().numpy().transpose(1,2,0)*255, cv2.COLOR_BGR2RGB))
+                os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(compression_level)} -o {temp_folder}compressed_bpg#{timestamp}.bpg {temp_folder}compressed_bpg#{timestamp}.png")
+                os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg#{timestamp}.png {temp_folder}compressed_bpg#{timestamp}.bpg")
+                decompressed_image = cv2.imread(f"{temp_folder}compressed_bpg#{timestamp}.png")
+                os.remove(f"{temp_folder}compressed_bpg#{timestamp}.png")
+                os.remove(f"{temp_folder}compressed_bpg#{timestamp}.bpg")
                 decompressed_image = cv2.cvtColor(decompressed_image, cv2.COLOR_BGR2RGB)
                 tensor_image = th.from_numpy(decompressed_image).permute(2, 0, 1)/255.0
                 bpg_image_list.append(tensor_image)
@@ -239,8 +244,8 @@ def create_argparser():
 def save_compressed(compressed, path, args):
     if args.compression_type == 'down+bpg':
         tv.utils.save_image(compressed, path + '.png')
-        os.system(f"bpgenc -c ycbcr -q  {int(args.compression_level)} -o {path}.bpg {path}.png")
-        os.system(f"bpgdec -o {path}.png {path}.bpg")
+        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(args.compression_level)} -o {path}.bpg {path}.png")
+        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {path}.png {path}.bpg")
     else:
         tv.utils.save_image(compressed, path + '.png')
 
