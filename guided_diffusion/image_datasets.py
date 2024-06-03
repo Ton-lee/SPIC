@@ -61,7 +61,7 @@ def load_data(
         labels_file = _list_image_files_recursively(os.path.join(data_dir, 'gtFine', 'train' if is_train else 'val'))
         if num_classes == 19:
             if generated_semantic == "":
-                classes = [x for x in labels_file if x.endswith('_trainIds.png')]
+                classes = [x for x in labels_file if x.endswith('_labelTrainIds.png')]
             else:
                 label_generated =  _list_image_files_recursively(generated_semantic)
                 classes = [x for x in label_generated if x.endswith('_color.png')]
