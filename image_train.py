@@ -16,14 +16,16 @@ from guided_diffusion.script_util import (
 )
 from guided_diffusion.train_util import TrainLoop
 
+
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
 
 def main():
     args = create_argparser().parse_args()
 
     dist_util.setup_dist()
-    logger.configure(dir=args.save_dir, format_strs=["stdout", "log", "tensorboard"])
+    logger.configure(dir=args.save_dir, format_strs=["stdout", "log", "tensorboard", 'csv'])
 
     logger.log("creating model and diffusion...")
     model, diffusion = sr_create_model_and_diffusion(
@@ -41,7 +43,8 @@ def main():
         batch_size=args.batch_size,
         image_size=args.image_size,
         class_cond=args.class_cond,
-        is_train=args.is_train
+        is_train=args.is_train,
+        return_iterator=True
     )
 
     logger.log("training...")
@@ -71,7 +74,6 @@ def main():
     ).run_loop()
 
 
-
 def create_argparser():
     defaults = dict(
         data_dir="",
@@ -89,7 +91,7 @@ def create_argparser():
         ema_rate="0.9999",  # comma-separated list of EMA values
         drop_rate=0.0,
         log_interval=50,
-        save_interval=500, 
+        save_interval=500,
         resume_checkpoint="",
         use_fp16=False,
         fp16_scale_growth=1e-3,

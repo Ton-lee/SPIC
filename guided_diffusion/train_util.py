@@ -185,7 +185,7 @@ class TrainLoop:
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            batch, cond = next(self.data) 
+            batch, cond = next(self.data)
             cond = self.preprocess_input(cond)
             if 'coarse' in cond:
                 cond["compressed"] = cond["coarse"]
@@ -317,6 +317,7 @@ class TrainLoop:
 
         for rate, params in zip(self.ema_rate, self.ema_params):
             files_to_keep.append(f"ema_{rate}_{(self.step+self.resume_step):06d}.pt")
+        files_to_keep.append('tb')
             
         # get the list of files in the directory
         files_in_dir = os.listdir(self.save_dir)

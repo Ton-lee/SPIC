@@ -79,7 +79,8 @@ def main():
         random_crop=False,
         random_flip=False,
         is_train=False,
-        no_instance=args.no_instance
+        no_instance=args.no_instance,
+        return_iterator=False
     )
 
     if args.use_fp16:

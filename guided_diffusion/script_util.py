@@ -417,7 +417,8 @@ def sr_create_model(
             attention_resolutions=tuple(attention_ds),
             dropout=dropout,
             channel_mult=channel_mult,
-            num_classes=(num_classes if class_cond else None),
+            # num_classes=(num_classes if class_cond else None),
+            num_classes=num_classes,  # 这里如果置为 None 会引发更多问题
             use_checkpoint=use_checkpoint,
             use_fp16=use_fp16,
             num_heads=num_heads,

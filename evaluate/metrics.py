@@ -57,6 +57,8 @@ if __name__ == '__main__':
     
     ##### print the results
     print(f"BPP: {round(BPP_coarse+BPP_SSM,4)}")
+    print(f"BPP(SSM): {round(BPP_SSM,4)}")
+    print(f"BPP(Com): {round(BPP_coarse,4)}")
     print(f"mIoU: {round(mIoU,4)}")
     print(f"FID: {round(fid,4)}")
     
