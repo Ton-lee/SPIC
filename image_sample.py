@@ -19,6 +19,7 @@ import torchvision as tv
 import torch.nn.functional as F
 import random
 from guided_diffusion.image_datasets import load_data
+import tqdm
 
 from guided_diffusion import dist_util, logger
 from guided_diffusion.script_util import (
@@ -27,7 +28,9 @@ from guided_diffusion.script_util import (
     add_dict_to_argparser,
     args_to_dict,
 )
+
 print(th.cuda.is_available())
+
 
 def set_random_seed(seed: int) -> None:
     """
@@ -43,7 +46,8 @@ def set_random_seed(seed: int) -> None:
     th.manual_seed(seed)
     th.cuda.manual_seed_all(seed)
     th.backends.cudnn.benchmark = False
-    th.backends.cudnn.deterministic=  True
+    th.backends.cudnn.deterministic = True
+
 
 def main():
     args = create_argparser().parse_args()
@@ -75,7 +79,7 @@ def main():
         random_crop=False,
         random_flip=False,
         is_train=False,
-        no_instance=args.no_instance 
+        no_instance=args.no_instance
     )
 
     if args.use_fp16:
@@ -90,15 +94,18 @@ def main():
     os.makedirs(sample_path, exist_ok=True)
     compressed_path = os.path.join(args.results_path, 'compressed')
     os.makedirs(compressed_path, exist_ok=True)
-    
 
     logger.log("sampling...")
     all_samples = []
+    pbar = tqdm.tqdm(total=min(args.num_samples, len(data)))
     for i, (batch, cond) in enumerate(data):
-        image = batch.cuda()#((batch + 1.0) / 2.0).cuda()
-        
+        pbar.update(args.batch_size)
+        image = batch.cuda()  #((batch + 1.0) / 2.0).cuda()
+
         label = (cond['label_ori'].float() / 255.0).cuda()
-        model_kwargs = preprocess_input(image, cond, num_classes=args.num_classes, large_size=args.large_size, small_size=args.small_size, compression_type=args.compression_type, compression_level=args.compression_level)
+        model_kwargs = preprocess_input(image, cond, num_classes=args.num_classes, large_size=args.large_size,
+                                        small_size=args.small_size, compression_type=args.compression_type,
+                                        compression_level=args.compression_level)
         compressed_img = (model_kwargs['compressed']).cuda()
 
         # set hyperparameter
@@ -111,7 +118,7 @@ def main():
             sample = sample_fn(
                 model,
                 (args.batch_size, 3, image.shape[2], image.shape[3]),
-                noise = F.interpolate(compressed_img, (image.shape[2], image.shape[3]), mode="bilinear"),
+                noise=F.interpolate(compressed_img, (image.shape[2], image.shape[3]), mode="bilinear"),
                 clip_denoised=args.clip_denoised,
                 model_kwargs=model_kwargs,
                 progress=True
@@ -127,35 +134,40 @@ def main():
         sample = (sample + 1) / 2.0
 
         gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
-        
+
         all_samples.extend([sample.cpu().numpy() for sample in gathered_samples])
         if args.compression_type == 'down+bpg':
             compressed_img = F.interpolate(image, (args.small_size, args.large_size), mode="bilinear")
-        
-        for j in range(image.shape[0]):
-            save_compressed(((compressed_img[j] + 1.0) / 2.0), os.path.join(compressed_path, cond['path'][j].split('/')[-1].split('.')[0]), args)
-            tv.utils.save_image(((image[j] + 1.0) / 2.0), os.path.join(image_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-            tv.utils.save_image(sample[j], os.path.join(sample_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-            tv.utils.save_image(label[j]*255.0/35.0, os.path.join(label_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
 
-        logger.log(f"created {len(all_samples) * args.batch_size} samples")
+        for j in range(image.shape[0]):
+            save_compressed(((compressed_img[j] + 1.0) / 2.0),
+                            os.path.join(compressed_path, cond['path'][j].split('/')[-1].split('.')[0]), args)
+            tv.utils.save_image(((image[j] + 1.0) / 2.0),
+                                os.path.join(image_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
+            tv.utils.save_image(sample[j],
+                                os.path.join(sample_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
+            tv.utils.save_image(label[j] * 255.0 / 35.0,
+                                os.path.join(label_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
+
+        # logger.log(f"created {len(all_samples) * args.batch_size} samples")
 
         if len(all_samples) * args.batch_size > args.num_samples:
             break
-
+    pbar.close()
     dist.barrier()
     logger.log("sampling complete")
+
 
 def gaussian_kernel(kernel_size=3, sigma=1.0):
     # Create a 1D Gaussian kernel
     x = th.linspace(-sigma, sigma, kernel_size)
-    one_d_kernel = th.exp(-0.5 * x**2)
+    one_d_kernel = th.exp(-0.5 * x ** 2)
     one_d_kernel /= one_d_kernel.sum()
-    
+
     # Create a 2D Gaussian kernel
     two_d_kernel = one_d_kernel[:, None] * one_d_kernel[None, :]
     two_d_kernel = two_d_kernel / two_d_kernel.sum()
-    
+
     return two_d_kernel
 
 
@@ -168,22 +180,23 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
     label_map = comp_['label']
     bs, _, h, w = label_map.size()
     if num_classes == 19:
-            nc = num_classes+1
+        nc = num_classes + 1
     else:
         nc = num_classes
     input_label = th.FloatTensor(bs, nc, h, w).zero_()
     input_semantics = input_label.scatter_(1, label_map, 1.0)
 
     if num_classes == 19:
-            input_semantics = input_semantics[:, :-1, :, :] 
+        input_semantics = input_semantics[:, :-1, :, :]
 
-    # concatenate instance map if it exists
+        # concatenate instance map if it exists
     if 'instance' in comp_:
         inst_map = comp_['instance']
         instance_edge_map = get_edges(inst_map)
         input_semantics = th.cat((input_semantics, instance_edge_map), dim=1)
 
-    cond = {key: value for key, value in comp_.items() if key not in ['label', 'instance', 'path', 'label_ori', 'coarse']}
+    cond = {key: value for key, value in comp_.items() if
+            key not in ['label', 'instance', 'path', 'label_ori', 'coarse']}
     cond['y'] = input_semantics
 
     if 'coarse' in comp_:
@@ -196,17 +209,20 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
             bpg_image_list = []
             for i in range(batch_size):
                 timestamp = time.time()
-                cv2.imwrite(f"{temp_folder}compressed_bpg#{timestamp}.png", cv2.cvtColor(image[i].cpu().numpy().transpose(1,2,0)*255, cv2.COLOR_BGR2RGB))
-                os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(compression_level)} -o {temp_folder}compressed_bpg#{timestamp}.bpg {temp_folder}compressed_bpg#{timestamp}.png")
-                os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg#{timestamp}.png {temp_folder}compressed_bpg#{timestamp}.bpg")
+                cv2.imwrite(f"{temp_folder}compressed_bpg#{timestamp}.png",
+                            cv2.cvtColor(image[i].cpu().numpy().transpose(1, 2, 0) * 255, cv2.COLOR_BGR2RGB))
+                os.system(
+                    f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(compression_level)} -o {temp_folder}compressed_bpg#{timestamp}.bpg {temp_folder}compressed_bpg#{timestamp}.png")
+                os.system(
+                    f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg#{timestamp}.png {temp_folder}compressed_bpg#{timestamp}.bpg")
                 decompressed_image = cv2.imread(f"{temp_folder}compressed_bpg#{timestamp}.png")
                 os.remove(f"{temp_folder}compressed_bpg#{timestamp}.png")
                 os.remove(f"{temp_folder}compressed_bpg#{timestamp}.bpg")
                 decompressed_image = cv2.cvtColor(decompressed_image, cv2.COLOR_BGR2RGB)
-                tensor_image = th.from_numpy(decompressed_image).permute(2, 0, 1)/255.0
+                tensor_image = th.from_numpy(decompressed_image).permute(2, 0, 1) / 255.0
                 bpg_image_list.append(tensor_image)
             compressed = th.stack(bpg_image_list)
-            cond['compressed'] = (2*compressed-1).cuda()
+            cond['compressed'] = (2 * compressed - 1).cuda()
         else:
             cond['compressed'] = F.interpolate(image, (small_size, large_size), mode="area")
 
@@ -241,13 +257,16 @@ def create_argparser():
     add_dict_to_argparser(parser, defaults)
     return parser
 
+
 def save_compressed(compressed, path, args):
     if args.compression_type == 'down+bpg':
         tv.utils.save_image(compressed, path + '.png')
-        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(args.compression_level)} -o {path}.bpg {path}.png")
+        os.system(
+            f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(args.compression_level)} -o {path}.bpg {path}.png")
         os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {path}.png {path}.bpg")
     else:
         tv.utils.save_image(compressed, path + '.png')
+
 
 if __name__ == "__main__":
     set_random_seed(0)

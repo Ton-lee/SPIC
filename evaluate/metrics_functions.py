@@ -34,7 +34,7 @@ def flif_compression(input_path, output_path):
                 file_path = os.path.join(root, file)
                 # join output_path with the file name replacinv .png with .flif
                 output_flif = os.path.join(output_path, file.replace(".png", ".flif"))
-                command = f"flif -e {file_path} {output_flif} --overwrite"
+                command = f"/home/Users/dqy/myLibs/FLIF/src/flif -e {file_path} {output_flif} --overwrite"
                 os.system(command)
 
 ##############
@@ -195,7 +195,25 @@ def get_semantic_maps(path, interimage=False):
     semantics_files = sorted(glob.glob(path + "*.png"))
     
     # colour dictionary in case of colour images
-    train_dict_colors = {(128, 64, 128): 0, (244, 35, 232): 1, (70, 70, 70): 2, (102, 102, 156): 3, (190, 153, 153): 4, (153, 153, 153): 5, (250, 170, 30): 6, (220, 220, 0): 7, (107, 142, 35): 8, (152, 251, 152): 9, (70, 130, 180): 10, (220, 20, 60): 11, (255, 0, 0): 12, (0, 0, 142): 13, (0, 0, 70): 14, (0, 60, 100): 15, (0, 80, 100): 16, (0, 0, 230): 17, (119, 11, 32): 18}
+    train_dict_colors = {(128, 64, 128): 0,
+                         (244, 35, 232): 1,
+                         (70, 70, 70): 2,
+                         (102, 102, 156): 3,
+                         (190, 153, 153): 4,
+                         (153, 153, 153): 5,
+                         (250, 170, 30): 6,
+                         (220, 220, 0): 7,
+                         (107, 142, 35): 8,
+                         (152, 251, 152): 9,
+                         (70, 130, 180): 10,
+                         (220, 20, 60): 11,
+                         (255, 0, 0): 12,
+                         (0, 0, 142): 13,
+                         (0, 0, 70): 14,
+                         (0, 60, 100): 15,
+                         (0, 80, 100): 16,
+                         (0, 0, 230): 17,
+                         (119, 11, 32): 18}
     
     # read the semantic maps and save them in a list
     semantics = []
