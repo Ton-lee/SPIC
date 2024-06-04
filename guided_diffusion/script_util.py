@@ -62,6 +62,7 @@ def model_and_diffusion_defaults():
         use_fp16=False,
         use_new_attention_order=False,
         no_instance=False,
+        coarse_cond=True
     )
     res.update(diffusion_defaults())
     return res
@@ -300,6 +301,7 @@ def sr_create_model_and_diffusion(
     max_iter_time,
     image_size,
     class_cond,
+    coarse_cond,
     learn_sigma,
     num_classes,
     no_instance,

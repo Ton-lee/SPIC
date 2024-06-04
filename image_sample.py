@@ -65,7 +65,7 @@ def main():
     model.to(dist_util.dev())
 
     logger.log("creating data loader...")
-    data, data_count = load_data(
+    data = load_data(
         dataset_mode=args.dataset_mode,
         data_dir=args.data_dir,
         num_classes=args.num_classes,
@@ -79,8 +79,7 @@ def main():
         random_crop=False,
         random_flip=False,
         is_train=False,
-        no_instance=args.no_instance,
-        return_iterator=False
+        no_instance=args.no_instance
     )
 
     if args.use_fp16:
@@ -98,7 +97,7 @@ def main():
 
     logger.log("sampling...")
     all_samples = []
-    pbar = tqdm.tqdm(total=min(args.num_samples, data_count))
+    pbar = tqdm.tqdm(total=args.num_samples)
     for i, (batch, cond) in enumerate(data):
         pbar.update(args.batch_size)
         image = batch.cuda()  #((batch + 1.0) / 2.0).cuda()

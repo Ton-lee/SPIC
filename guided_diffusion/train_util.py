@@ -323,9 +323,9 @@ class TrainLoop:
         files_in_dir = os.listdir(self.save_dir)
         # delete all the files that are not in the list of files to keep
         logger.log("Deleting old checkpoints...")
-        for file in files_in_dir:
-            if file not in files_to_keep:
-                os.remove(os.path.join(self.save_dir, file))
+        # for file in files_in_dir:
+        #     if file not in files_to_keep:
+        #         os.remove(os.path.join(self.save_dir, file))
 
     def preprocess_input(self, cond_):#, compressed):
         # move to GPU and change data types

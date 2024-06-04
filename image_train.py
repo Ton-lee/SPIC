@@ -43,8 +43,8 @@ def main():
         batch_size=args.batch_size,
         image_size=args.image_size,
         class_cond=args.class_cond,
-        is_train=args.is_train,
-        return_iterator=True
+        coarse_cond=args.coarse_cond,
+        is_train=args.is_train
     )
 
     logger.log("training...")
@@ -96,7 +96,7 @@ def create_argparser():
         use_fp16=False,
         fp16_scale_growth=1e-3,
         is_train=True,
-        save_dir=""
+        save_dir="",
     )
     defaults.update(sr_model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

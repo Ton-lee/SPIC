@@ -21,11 +21,11 @@ def load_data(
     coarse_path="",
     no_instance=True,
     class_cond=False,
+    coarse_cond=True,
     deterministic=False,
     random_crop=True,
     random_flip=True,
-    is_train=True,
-    return_iterator=True
+    is_train=True
 ):
     """
     For a dataset, create a generator over (images, kwargs) pairs.
@@ -104,7 +104,8 @@ def load_data(
         random_crop=random_crop,
         random_flip=random_flip,
         is_train=is_train,
-        class_cond=class_cond
+        class_cond=class_cond,
+        coarse_cond=coarse_cond
     )
 
     if deterministic:
@@ -115,11 +116,8 @@ def load_data(
         loader = DataLoader(
             dataset, batch_size=batch_size, shuffle=True, num_workers=1, drop_last=True
         )
-    if not return_iterator:
-        return loader, len(all_files)
-    else:
-        while True:
-            yield from loader
+    while True:
+        yield from loader
 
 
 def _list_image_files_recursively(data_dir):
@@ -150,7 +148,8 @@ class ImageDataset(Dataset):
         random_crop=False,
         random_flip=True,
         is_train=True,
-        class_cond=True
+        class_cond=True,
+        coarse_cond=True
     ):
         super().__init__()
         self.is_train = is_train
@@ -165,6 +164,7 @@ class ImageDataset(Dataset):
         self.random_flip = random_flip
         self.num_classes = num_classes
         self.class_cond = class_cond
+        self.coarse_cond = coarse_cond
 
     def __len__(self):
         return len(self.local_images)
@@ -243,6 +243,8 @@ class ImageDataset(Dataset):
         out_dict['label'] = arr_class[None, ]
         if not self.class_cond:
             out_dict['label'] *= 0
+        if not self.coarse_cond:
+            out_dict['coarse'] = np.zeros([3] + list(arr_image.shape[:2])).astype(np.float32)
 
         if arr_instance is not None:
             out_dict['instance'] = arr_instance[None, ]
