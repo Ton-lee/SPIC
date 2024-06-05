@@ -7,6 +7,7 @@ import argparse
 import os
 import time
 
+import torch
 from PIL import Image
 from io import BytesIO
 import numpy as np
@@ -98,14 +99,17 @@ def main():
     logger.log("sampling...")
     all_samples = []
     pbar = tqdm.tqdm(total=args.num_samples)
+    prefix = "ori" if "ori" in args.results_path else "noCom" if "noCom" in args.results_path else "noSSM" if "noSSM" in args.results_path else ""
+    prefix = prefix + "-" + args.results_path.strip("/").split("/")[-1]
     for i, (batch, cond) in enumerate(data):
         pbar.update(args.batch_size)
         image = batch.cuda()  #((batch + 1.0) / 2.0).cuda()
-
+        if not args.coarse_cond:
+            cond['coarse'] = th.zeros_like(batch)
         label = (cond['label_ori'].float() / 255.0).cuda()
         model_kwargs = preprocess_input(image, cond, num_classes=args.num_classes, large_size=args.large_size,
                                         small_size=args.small_size, compression_type=args.compression_type,
-                                        compression_level=args.compression_level)
+                                        compression_level=args.compression_level, prefix=prefix)
         compressed_img = (model_kwargs['compressed']).cuda()
 
         # set hyperparameter
@@ -171,7 +175,7 @@ def gaussian_kernel(kernel_size=3, sigma=1.0):
     return two_d_kernel
 
 
-def preprocess_input(image, comp_, num_classes, large_size, small_size, compression_type, compression_level):
+def preprocess_input(image, comp_, num_classes, large_size, small_size, compression_type, compression_level, prefix=""):
     temp_folder = "/home/Users/dqy/Projects/SPIC/temp/"
     # move to GPU and change data types
     comp_['label'] = comp_['label'].long()
@@ -209,15 +213,15 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
             bpg_image_list = []
             for i in range(batch_size):
                 timestamp = time.time()
-                cv2.imwrite(f"{temp_folder}compressed_bpg#{timestamp}.png",
+                cv2.imwrite(f"{temp_folder}compressed_bpg-{prefix}#{timestamp}.png",
                             cv2.cvtColor(image[i].cpu().numpy().transpose(1, 2, 0) * 255, cv2.COLOR_BGR2RGB))
                 os.system(
-                    f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(compression_level)} -o {temp_folder}compressed_bpg#{timestamp}.bpg {temp_folder}compressed_bpg#{timestamp}.png")
+                    f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(compression_level)} -o {temp_folder}compressed_bpg-{prefix}#{timestamp}.bpg {temp_folder}compressed_bpg-{prefix}#{timestamp}.png")
                 os.system(
-                    f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg#{timestamp}.png {temp_folder}compressed_bpg#{timestamp}.bpg")
-                decompressed_image = cv2.imread(f"{temp_folder}compressed_bpg#{timestamp}.png")
-                os.remove(f"{temp_folder}compressed_bpg#{timestamp}.png")
-                os.remove(f"{temp_folder}compressed_bpg#{timestamp}.bpg")
+                    f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg-{prefix}#{timestamp}.png {temp_folder}compressed_bpg-{prefix}#{timestamp}.bpg")
+                decompressed_image = cv2.imread(f"{temp_folder}compressed_bpg-{prefix}#{timestamp}.png")
+                os.remove(f"{temp_folder}compressed_bpg-{prefix}#{timestamp}.png")
+                os.remove(f"{temp_folder}compressed_bpg-{prefix}#{timestamp}.bpg")
                 decompressed_image = cv2.cvtColor(decompressed_image, cv2.COLOR_BGR2RGB)
                 tensor_image = th.from_numpy(decompressed_image).permute(2, 0, 1) / 255.0
                 bpg_image_list.append(tensor_image)

@@ -84,6 +84,7 @@ class TrainLoop:
         self.weight_decay = weight_decay
         self.lr_anneal_steps = lr_anneal_steps
         self.save_dir = save_dir if save_dir else get_blob_logdir()
+        self.prefix = self.save_dir.strip("/").split("/")[-1]
 
         self.step = 0
         self.resume_step = 0
@@ -195,12 +196,12 @@ class TrainLoop:
                     bpg_image_list = []
                     for i in range(image.shape[0]):
                         timestamp = time.time()
-                        cv2.imwrite(f"{temp_folder}compressed_bpg#{timestamp}.png", cv2.cvtColor((image[i].cpu().numpy().transpose(1, 2, 0)+1)/2.*255.0, cv2.COLOR_BGR2RGB))
-                        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(self.compression_level)} -o {temp_folder}compressed_bpg#{timestamp}.bpg {temp_folder}compressed_bpg#{timestamp}.png")
-                        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg#{timestamp}.png {temp_folder}compressed_bpg#{timestamp}.bpg")
-                        decompressed_image = cv2.imread(f"{temp_folder}compressed_bpg#{timestamp}.png")
-                        os.remove(f"{temp_folder}compressed_bpg#{timestamp}.png")
-                        os.remove(f"{temp_folder}compressed_bpg#{timestamp}.bpg")
+                        cv2.imwrite(f"{temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png", cv2.cvtColor((image[i].cpu().numpy().transpose(1, 2, 0)+1)/2.*255.0, cv2.COLOR_BGR2RGB))
+                        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(self.compression_level)} -o {temp_folder}compressed_bpg-{self.prefix}#{timestamp}.bpg {temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png")
+                        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png {temp_folder}compressed_bpg-{self.prefix}#{timestamp}.bpg")
+                        decompressed_image = cv2.imread(f"{temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png")
+                        os.remove(f"{temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png")
+                        os.remove(f"{temp_folder}compressed_bpg-{self.prefix}#{timestamp}.bpg")
                         decompressed_image = cv2.cvtColor(decompressed_image, cv2.COLOR_BGR2RGB)
                         tensor_image = (th.from_numpy(decompressed_image).permute(2, 0, 1)*2/255.0)-1
                         bpg_image_list.append(tensor_image)
