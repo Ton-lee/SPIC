@@ -106,7 +106,7 @@ def main():
         image = batch.cuda()  #((batch + 1.0) / 2.0).cuda()
         if not args.coarse_cond:
             cond['coarse'] = th.zeros_like(batch)
-        label = (cond['label_ori'].float() / 255.0).cuda()
+        label = (cond['label_ori'].float() / 255.0).cuda()  # 0~1, 255 被归一化到 1
         model_kwargs = preprocess_input(image, cond, num_classes=args.num_classes, large_size=args.large_size,
                                         small_size=args.small_size, compression_type=args.compression_type,
                                         compression_level=args.compression_level, prefix=prefix)
@@ -150,7 +150,7 @@ def main():
                                 os.path.join(image_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
             tv.utils.save_image(sample[j],
                                 os.path.join(sample_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-            tv.utils.save_image(label[j] * 255.0 / 35.0,
+            tv.utils.save_image(label[j] * 255.0 / 35.0,  # 0~18 的标签和 255，保存为以 7 为灰度间隔方便可视化
                                 os.path.join(label_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
 
         # logger.log(f"created {len(all_samples) * args.batch_size} samples")
