@@ -216,7 +216,6 @@ def get_semantic_maps(path, interimage=False):
                         (0, 0, 230): 17,  # motorcycle
                         (119, 11, 32): 18  # bicycle
                      }
-    
     # read the semantic maps and save them in a list
     semantics = []
     for semantic in semantics_files: ## TODO: remove the [:32] to the right number

@@ -1,11 +1,10 @@
 """测试通用图像压缩算法在语义分割图压缩的性能"""
 import os.path
 import cv2
-import numpy as np
 import tqdm
 import sys
 sys.path.append("/home/Users/dqy/Projects/SPIC")
-from base_utils import suffix, compress_image, get_mIoU
+from tools.base_utils import suffix, compress_image, get_mIoU
 
 
 # label_suffix = "(extended)"
