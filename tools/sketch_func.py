@@ -2,11 +2,14 @@
 import numpy as np
 import cv2
 from typing import List
+from collections import Counter
 from skimage import measure
 from tools.utils import save_graph_compressed, rearrange_graph
 from tools.base_utils import ssm2boundary, get_mIoU, get_semantic_orders
 from tools.sketch_utils import split_path, get_line_points, get_degree8, get_degree4, del_stick, find_neighbor
 from tools.sketch_utils import process_clip, preprocess_ssm, get_ssm_colored_cityscapes
+from tools.sketch_utils import find_central_point
+
 
 
 class BranchMap:
@@ -177,9 +180,10 @@ class BranchRecorder:
                     all_points.pop(branch_pos)
         return indexes
 
-    def generate_sketch(self, H, W):
+    def generate_sketch(self, H, W, return_times=False):
         """由所记录的分支抽象和拟合结果恢复素描图"""
         edge_sketch = np.zeros((H, W, 3), dtype=np.uint8)
+        times = np.zeros((H, W), dtype=np.uint8)
         for branch in self.branches:
             node_pos = [branch.start_pos] + branch.mid_pos + [branch.end_pos]
             for section_index in range(len(node_pos) - 1):
@@ -194,7 +198,12 @@ class BranchRecorder:
                 edge_sketch[end_node[0], end_node[1], :] = [0, 1, 0]
             edge_sketch[branch.start_pos[0], branch.start_pos[1], :] = [1, 0, 0]
             edge_sketch[branch.end_pos[0], branch.end_pos[1], :] = [1, 0, 0]
-        return edge_sketch
+            for path in branch.path:
+                times[path[0], path[1]] += 1
+        if not return_times:
+            return edge_sketch
+        else:
+            return edge_sketch, times
 
     def generate_branch_map(self, H, W):
         """由所记录的分支抽象和拟合结果恢复素描图，其中各个素描点数值为所属分支的序号（从 1 开始，以与背景区分开）"""
@@ -269,31 +278,130 @@ class BranchRecorder:
         # 设置分支图，将各个像素点所属分支序号（原始记录）标记在图中
         branch_map = self.generate_branch_map(H, W)
         # 设置有色素描图，分支的端点为红色，其余拟合点为绿色
-        sketch_colored = self.generate_sketch(H, W)
-        inner_branch_map = sketch_colored.sum(axis=2) == 3  # 分支内标记为 1，其余为 0
+        sketch_colored, times = self.generate_sketch(H, W, return_times=True)
+        inner_branch_map = sketch_colored.sum(axis=2) == 3  # 各像素位于分支内标记为 1，其余为 0
         # 连通域划分，获得连通区域数目和各像素点所属区域（素描点为 0，不属于任何连通域）
         # regions_count, regions_map = branch_count_2path(branch_map.map == 0, neighbor_range=4)
         regions_map, regions_count = measure.label(branch_map.map == 0, background=0, return_num=True, connectivity=1)
         for region_idx in range(regions_count):
             # 获取区域边界像素
-            region_points = regions_map == region_idx + 1  # 区域内所有点
+            region_points = regions_map == region_idx + 1  # 区域内所有点，通过四邻域连通
+            # 取 region_points 中值为 True 的坐标
+            seed_point = find_central_point(region_points)
+            # if region_points[56, 397]:
+            #     print("Watch!")
             labels_region = ssm[region_points].tolist()  # 该区域内所有点的标签
             label_region = max(set(labels_region), key=labels_region.count)  # 出现最多的标签作为该区域的标签
             if label_region == ignore_label:
                 continue  # 忽略区域
             kernel = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype='uint8')  # 4 邻域膨胀核
-            region_dilated = cv2.dilate(region_points.astype('uint8'), kernel)  # 进行膨胀
-            border_map4 = region_dilated != region_points  # 区域边界为 1，其余为 0
+            region_dilated4 = cv2.dilate(region_points.astype('uint8'), kernel)  # 进行膨胀
+            border_map4 = region_dilated4 != region_points  # 区域边界为 1，其余为 0
             kernel = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]], dtype='uint8')  # 8 邻域膨胀核
-            region_dilated = cv2.dilate(region_points.astype('uint8'), kernel)  # 进行膨胀
-            border_map8 = region_dilated != region_points  # 区域边界为 1，其余为 0
-            branch_indexes = list(branch_map.map[inner_branch_map * border_map4] - 1)
+            region_dilated8 = cv2.dilate(region_points.astype('uint8'), kernel)  # 进行膨胀
+            border_map8 = region_dilated8 != region_points  # 区域边界为 1，其余为 0
+            # 将四邻域边界点作为内点所属的所有分支视为围成该区域的分支
+            branch_indexes = list(set(list(branch_map.map[inner_branch_map * border_map4] - 1)))  # 四邻域点所属的所有分支
             # 存在分支完全位于边界上
             for branch_id, branch in enumerate(self.branches):
                 if border_map8[branch.start_pos[0], branch.start_pos[1]] \
                     and border_map8[branch.end_pos[0], branch.end_pos[1]] \
                         and all([border_map8[pos[0], pos[1]] for pos in branch.mid_pos]):
                     branch_indexes.append(branch_id)
+            branch_indexes = list(set(branch_indexes))  # 保留唯一的序号
+            # 删除对区域包围没有影响的分支
+            # 第一步：计算原包围区域与实际区域的交并比
+            plotted_ori = self.plot_branch(branch_indexes, W, H)
+            # 生成连通图
+            region_map, region_count = measure.label(1 - plotted_ori,
+                                                     background=0,
+                                                     connectivity=1,
+                                                     return_num=True)  # 按四邻域划分连通分支
+            region_seed = region_map == region_map[seed_point[0], seed_point[1]]
+            IoU_ori = np.sum(region_seed * region_points) / np.sum(region_seed + region_points)
+            del_branches = []
+            for candidate_branch_id in branch_indexes:  # 考虑每一个分支
+                plotted = self.plot_branch([index for index in branch_indexes if index not in [candidate_branch_id] + del_branches],
+                                           W, H)
+                # 生成连通图
+                region_map, region_count = measure.label(1 - plotted,
+                              background=0,
+                              connectivity=1,
+                              return_num=True)  # 按四邻域划分连通分支
+                region_seed = region_map == region_map[seed_point[0], seed_point[1]]
+                IoU = np.sum(region_seed * region_points) / np.sum(region_seed + region_points)
+                if IoU >= IoU_ori:  # 去除分支后 IoU 没有降低，表示可以去除
+                    del_branches.append(candidate_branch_id)
+            branch_indexes = [bid for bid in branch_indexes if bid not in del_branches]
+            # 整合围成该区域的分支序号
+            if not branch_indexes:  # 空区域
+                continue
+            branch_numbers = [indexes[i] for i in branch_indexes]  # 将分支的序号转化为重新分配的标签
+            SSM_regions.append((sorted(branch_numbers), label_region))  # 记录该区域的包围分支序号和区域的语义标签
+        return SSM_regions
+
+    def plot_branch(self, branch_indexes, W, H):
+        plotted = np.zeros((H, W), dtype="bool")
+        sketch_points = np.zeros([0, 2]).astype('int')
+        for plot_branch_id in branch_indexes:
+            fit_points = ([self.branches[plot_branch_id].start_pos] +
+                          self.branches[plot_branch_id].mid_pos +
+                          [self.branches[plot_branch_id].end_pos])  # 分支上的拟合点
+            for plot_line_idx in range(len(fit_points) - 1):
+                line_points = get_line_points(fit_points[plot_line_idx], fit_points[plot_line_idx + 1])
+                sketch_points = np.concatenate((sketch_points, line_points), axis=0)
+            plotted[sketch_points[:, 0], sketch_points[:, 1]] = 1
+        return plotted
+
+    def generate_regions_makeup(self, ssm: np.ndarray, indexes: list, ignore_label=19):
+        """
+        根据语义分割图、素描图和分支序号获得语义区域的表征，包括围成语义区域的分支序号和语义标签。
+        先挑出一定正确的分支，再从剩余分支中选适当的分支来补足
+        """
+        H, W = ssm.shape[:2]
+        SSM_regions = []
+        # 设置分支图，将各个像素点所属分支序号（原始记录）标记在图中
+        branch_map = self.generate_branch_map(H, W)
+        # 设置有色素描图，分支的端点为红色，其余拟合点为绿色
+        sketch_colored, times = self.generate_sketch(H, W, return_times=True)
+        inner_branch_map = sketch_colored.sum(axis=2) == 3  # 各像素位于分支内标记为 1，其余为 0
+        # 连通域划分，获得连通区域数目和各像素点所属区域（素描点为 0，不属于任何连通域）
+        regions_map, regions_count = measure.label(branch_map.map == 0, background=0, return_num=True, connectivity=1)
+        for region_idx in range(regions_count):
+            boundary = np.zeros_like(inner_branch_map)
+            # 获取区域边界像素
+            region_points = regions_map == region_idx + 1  # 区域内所有点
+            if region_points[70, 300]:
+                print("Watch!")
+            labels_region = ssm[region_points].tolist()  # 该区域内所有点的标签
+            label_region = max(set(labels_region), key=labels_region.count)  # 出现最多的标签作为该区域的标签
+            if label_region == ignore_label:
+                continue  # 忽略区域
+            kernel = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype='uint8')  # 4 邻域膨胀核
+            region_dilated4 = cv2.dilate(region_points.astype('uint8'), kernel)  # 进行膨胀
+            border_map4 = region_dilated4 != region_points  # 区域边界为 1，其余为 0
+            kernel = np.array([[1, 1, 1], [1, 1, 1], [1, 1, 1]], dtype='uint8')  # 8 邻域膨胀核
+            region_dilated8 = cv2.dilate(region_points.astype('uint8'), kernel)  # 进行膨胀
+            border_map8 = region_dilated8 != region_points  # 区域边界为 1，其余为 0
+            branch_indexes = []
+            # STEP1: 记录完全位于边界上的分支
+            for branch_id, branch in enumerate(self.branches):
+                if border_map8[branch.start_pos[0], branch.start_pos[1]] \
+                    and border_map8[branch.end_pos[0], branch.end_pos[1]] \
+                        and all([border_map8[pos[0], pos[1]] for pos in branch.mid_pos]):
+                    branch_indexes.append(branch_id)
+            # STEP2: 从剩余分支中挑选，补足区域缺口
+            sketch_points = np.zeros([0, 2]).astype('int')
+            for branch_id in branch_indexes:  # 找到各个分支绘制的点
+                fit_points = ([self.branches[branch_id].start_pos] +
+                              self.branches[branch_id].mid_pos +
+                              [self.branches[branch_id].end_pos])  # 分支上的拟合点
+                for plot_line_idx in range(len(fit_points) - 1):
+                    line_points = get_line_points(fit_points[plot_line_idx], fit_points[plot_line_idx + 1])
+                    sketch_points = np.concatenate((sketch_points, line_points), axis=0)
+            boundary[sketch_points[:, 0], sketch_points[:, 1]] = 1
+            gap_map = border_map4 * (1- boundary)  # 属于四邻域边界但未被分支覆盖的边界点图
+            # todo: unfinished
             branch_indexes = list(set(branch_indexes))  # 保留唯一的序号
             # 整合围成该区域的分支序号
             if not branch_indexes:  # 空区域
@@ -346,7 +454,7 @@ class BranchRecorder:
                     if (region_map[line, :]).any():  # 第一次出现标签即为该区域内的标签值
                         region_label = region_map[line, :][region_map[line, :] != 0][0]
                         break
-                inner_mask = np.logical_or(inner_mask, region_map == region_label)
+                inner_mask = np.logical_or(inner_mask, region_map == region_label)  # 区域内部的点（包括边界）
                 # 获得该多边形包围的内部点（包括边界），舍弃的用法
                 # inner_points = get_inner_points(polygon)
                 # for point in inner_points:

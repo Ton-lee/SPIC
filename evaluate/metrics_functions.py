@@ -190,7 +190,7 @@ def batch_intersection_union(output, target, nclass):
 
 
 # read the SSM images
-def get_semantic_maps(path, interimage=False):
+def get_semantic_maps(path, interimage=False, resize=True):
     # get the semantic maps paths
     semantics_files = sorted(glob.glob(path + "*.png"))
     
@@ -225,14 +225,16 @@ def get_semantic_maps(path, interimage=False):
         # if the SSM is in grayscale no problem
         if not interimage:
             pil_class = pil_class.convert("L")
-            pil_class = pil_class.resize((512,256), resample=Image.NEAREST)
+            if resize:
+                pil_class = pil_class.resize((512,256), resample=Image.NEAREST)
             # rescale from 0-255 to 0-19
             semantic_img = np.array(pil_class)//7
             semantic_img[semantic_img == 36] = 19
         # otherwise if it is generated with interimage, I have to adjust the colors
         else:
             pil_class = pil_class.convert("RGB")
-            pil_class = pil_class.resize((512,256), resample=Image.NEAREST)
+            if resize:
+                pil_class = pil_class.resize((512,256), resample=Image.NEAREST)
             # Convert the image to a list of pixel values
             pixels = list(pil_class.getdata())
 

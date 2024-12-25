@@ -7,6 +7,8 @@ import blobfile as bf
 from mpi4py import MPI
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
+import time
+import cv2
 
 
 def load_data(
@@ -25,7 +27,9 @@ def load_data(
     deterministic=False,
     random_crop=True,
     random_flip=True,
-    is_train=True
+    is_train=True,
+    shifted=False,
+    args=None
 ):
     """
     For a dataset, create a generator over (images, kwargs) pairs.
@@ -58,20 +62,37 @@ def load_data(
             coarse_all_files = None
         else:
             coarse_all_files = _list_image_files_recursively(coarse_path)
-       
-        labels_file = _list_image_files_recursively(os.path.join(data_dir, 'gtFine', 'train' if is_train else 'val'))
-        if num_classes == 19:
-            if generated_semantic == "":
-                classes = [x for x in labels_file if x.endswith('_labelTrainIds.png')]
+        ssm_path = os.path.join(data_dir, 'gtFine', 'train' if is_train else 'val')
+        if args.ssm_path != "":
+            ssm_path = args.ssm_path
+        if args.condition in ["ssm", "boundary", "sketch"]:
+            labels_file = _list_image_files_recursively(ssm_path)
+        elif args.condition in ["layout"]:
+            labels_file = _list_all_files_recursively(ssm_path)
+        else:
+            raise NotImplementedError(f"Not implemented condition: {args.condition}")
+        # print(ssm_path, len(labels_file))
+        if args.condition == "ssm":
+            if num_classes == 19:
+                if generated_semantic == "":
+                    classes = [x for x in labels_file if x.endswith('_labelTrainIds.png')]
+                else:
+                    label_generated =  _list_image_files_recursively(generated_semantic)
+                    classes = [x for x in label_generated if x.endswith('_color.png')]
             else:
-                label_generated =  _list_image_files_recursively(generated_semantic)
-                classes = [x for x in label_generated if x.endswith('_color.png')]
-        else:
-            classes = [x for x in labels_file if x.endswith('_labelIds.png')]
-        if not no_instance:
-            instances = [x for x in labels_file if x.endswith('_instanceIds.png')]
-        else:
+                classes = [x for x in labels_file if x.endswith('_labelIds.png')]
+            if not no_instance:
+                instances = [x for x in labels_file if x.endswith('_instanceIds.png')]
+            else:
+                instances = None
+        elif args.condition == "boundary":
+            classes = [x for x in labels_file if x.endswith('_instanceBoundary.png')]
             instances = None
+        elif args.condition == "layout":
+            classes = [x for x in labels_file if x.endswith('_layout.npy')]
+            instances = None
+        else:
+            raise NotImplementedError(f"Not implemented condition: {args.condition}")
     elif dataset_mode == 'ade20k':
         path_images_ = os.path.join(data_dir, 'train_img' if is_train else 'test_img')
         path_labels_ = os.path.join(data_dir, 'train_label' if is_train else 'test_label')
@@ -105,7 +126,8 @@ def load_data(
         random_flip=random_flip,
         is_train=is_train,
         class_cond=class_cond,
-        coarse_cond=coarse_cond
+        coarse_cond=coarse_cond,
+        args=args
     )
 
     if deterministic:
@@ -132,6 +154,18 @@ def _list_image_files_recursively(data_dir):
     return results
 
 
+def _list_all_files_recursively(data_dir):
+    results = []
+    for entry in sorted(bf.listdir(data_dir)):
+        full_path = bf.join(data_dir, entry)
+        ext = entry.split(".")[-1]
+        if "." in entry and ext.lower() in ["jpg", "jpeg", "png", "gif", "npy", "txt"]:
+            results.append(full_path)
+        elif bf.isdir(full_path):
+            results.extend(_list_all_files_recursively(full_path))
+    return results
+
+
 class ImageDataset(Dataset):
     def __init__(
         self,
@@ -149,9 +183,11 @@ class ImageDataset(Dataset):
         random_flip=True,
         is_train=True,
         class_cond=True,
-        coarse_cond=True
+        coarse_cond=True,
+        args=None
     ):
         super().__init__()
+        self.args = args
         self.is_train = is_train
         self.dataset_mode = dataset_mode
         self.coarse_all_files = None if coarse_all_files is None else coarse_all_files[shard:][::num_shards]
@@ -165,6 +201,8 @@ class ImageDataset(Dataset):
         self.num_classes = num_classes
         self.class_cond = class_cond
         self.coarse_cond = coarse_cond
+        self.shifted = args.shifted
+        self.prefix = "shifted"
 
     def __len__(self):
         return len(self.local_images)
@@ -187,15 +225,50 @@ class ImageDataset(Dataset):
             pil_coarse = None
             arr_coarse = None
 
+        # 为了方便处理，当 shifted 时，将上一张图像的缩小版作为当前的条件
+        if self.shifted:
+            coarse_path = self.local_images[idx - 1]
+            folder_image = path.split("/")[-2]
+            folder_coarse = coarse_path.split("/")[-2]
+            if folder_image != folder_coarse:
+                coarse_path = self.local_images[idx]  # 简单起见，如果遇到视频第一帧则直接用该帧进行生成
+            # print(path, coarse_path)
+            with bf.BlobFile(coarse_path, "rb") as f:
+                pil_coarse = Image.open(f)
+                pil_coarse.load()
+            pil_coarse = pil_coarse.convert("RGB")
+            arr_coarse = np.array(pil_coarse)
+            if self.args.compression_type == 'down+bpg':
+                temp_folder = "/home/Users/dqy/Projects/SPIC/temp/"
+                timestamp = time.time()
+                image = cv2.resize(arr_coarse, (self.args.large_size, self.args.small_size))
+                cv2.imwrite(f"{temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png", image)
+                os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(self.args.compression_level)} -o {temp_folder}compressed_bpg-{self.prefix}#{timestamp}.bpg {temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png")
+                os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png {temp_folder}compressed_bpg-{self.prefix}#{timestamp}.bpg")
+                decompressed_image = cv2.imread(f"{temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png")
+                os.remove(f"{temp_folder}compressed_bpg-{self.prefix}#{timestamp}.png")
+                os.remove(f"{temp_folder}compressed_bpg-{self.prefix}#{timestamp}.bpg")
+                decompressed_image = cv2.cvtColor(decompressed_image, cv2.COLOR_BGR2RGB)
+                arr_coarse = decompressed_image
+            else:
+                arr_coarse = cv2.resize(arr_coarse, (self.args.large_size, self.args.small_size))
+
         out_dict = {}
+        # print(len(self.local_classes))
         class_path = self.local_classes[idx]
-        with bf.BlobFile(class_path, "rb") as f:
-            pil_class = Image.open(f)
-            pil_class.load()
-        if self.generated_semantic == "":
-            pil_class = pil_class.convert("L")
+        if self.args.condition in ["ssm", "boundary", "sketch"]:
+            with bf.BlobFile(class_path, "rb") as f:
+                pil_class = Image.open(f)
+                pil_class.load()
+            if self.generated_semantic == "":
+                pil_class = pil_class.convert("L")
+            else:
+                pil_class = pil_class.convert("P")
+        elif self.args.condition == "layout":
+            layout = np.load(class_path)
+            pil_class = layout
         else:
-            pil_class = pil_class.convert("P")
+            raise NotImplementedError(f"Not implemented condition: {self.args.condition}")
 
         if self.local_instances is not None:
             instance_path = self.local_instances[idx] # DEBUG: from classes to instances, may affect CelebA
@@ -207,7 +280,7 @@ class ImageDataset(Dataset):
             pil_instance = None
 
         if self.dataset_mode == 'cityscapes':
-            arr_image, arr_class, arr_instance = resize_arr([pil_image, pil_class, pil_instance], self.resolution)
+            arr_image, arr_class, arr_instance = self.resize_arr([pil_image, pil_class, pil_instance], self.resolution)
         else: 
             if self.is_train:
                 if self.random_crop:
@@ -215,7 +288,7 @@ class ImageDataset(Dataset):
                 else:
                     arr_image, arr_class, arr_instance = center_crop_arr([pil_image, pil_class, pil_instance], self.resolution)
             else:
-                arr_image, arr_class, arr_instance = resize_arr([pil_image, pil_class, pil_instance], self.resolution, keep_aspect=False)
+                arr_image, arr_class, arr_instance = self.resize_arr([pil_image, pil_class, pil_instance], self.resolution, keep_aspect=False)
 
         if self.random_flip and random.random() < 0.5:
             arr_image = arr_image[:, ::-1].copy()
@@ -239,8 +312,13 @@ class ImageDataset(Dataset):
 
         if self.num_classes == 19: 
             arr_class[arr_class == 255] = 19
-        
-        out_dict['label'] = arr_class[None, ]
+
+        if self.args.condition == "boundary":
+            arr_class = 1 - (arr_class / 255).astype("int")
+        if self.args.condition in ["ssm", "boundary", "sketch"]:  # 图像形式的标签需要添加一个通道
+            out_dict['label'] = arr_class[None, ]
+        else:
+            out_dict['label'] = np.transpose(arr_class, [2, 0, 1])
         if not self.class_cond:
             out_dict['label'] *= 0
         if not self.coarse_cond:
@@ -256,36 +334,36 @@ class ImageDataset(Dataset):
         return np.transpose(arr_image, [2, 0, 1]), out_dict#, np.transpose(arr_compressed, [2, 0, 1])
 
 
-def resize_arr(pil_list, image_size, keep_aspect=True):
-    # We are not on a new enough PIL to support the `reducing_gap`
-    # argument, which uses BOX downsampling at powers of two first.
-    # Thus, we do it by hand to improve downsample quality.
-    pil_image, pil_class, pil_instance = pil_list
-    
-    while min(*pil_image.size) >= 2 * image_size:
-        pil_image = pil_image.resize(
-            tuple(x // 2 for x in pil_image.size), resample=Image.BOX
-        )
+    def resize_arr(self, pil_list, image_size, keep_aspect=True):
+        # We are not on a new enough PIL to support the `reducing_gap`
+        # argument, which uses BOX downsampling at powers of two first.
+        # Thus, we do it by hand to improve downsample quality.
+        pil_image, pil_class, pil_instance = pil_list
+        
+        while min(*pil_image.size) >= 2 * image_size:
+            pil_image = pil_image.resize(
+                tuple(x // 2 for x in pil_image.size), resample=Image.BOX
+            )
 
-    if keep_aspect:
-        scale = image_size / min(*pil_image.size)
-        pil_image = pil_image.resize(
-            tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
-        )
-    else:
-        pil_image = pil_image.resize((image_size, image_size), resample=Image.BICUBIC)
-    
-    
+        if keep_aspect:
+            scale = image_size / min(*pil_image.size)
+            pil_image = pil_image.resize(
+                tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
+            )
+        else:
+            pil_image = pil_image.resize((image_size, image_size), resample=Image.BICUBIC)
+        
+        
+        if self.args.condition in ["ssm", "boundary", "sketch"]:
+            pil_class = pil_class.resize(pil_image.size, resample=Image.NEAREST)
+        if pil_instance is not None:
+            pil_instance = pil_instance.resize(pil_image.size, resample=Image.NEAREST)
+        
 
-    pil_class = pil_class.resize(pil_image.size, resample=Image.NEAREST)
-    if pil_instance is not None:
-        pil_instance = pil_instance.resize(pil_image.size, resample=Image.NEAREST)
-    
-
-    arr_image = np.array(pil_image)
-    arr_class = np.array(pil_class)
-    arr_instance = np.array(pil_instance) if pil_instance is not None else None
-    return arr_image, arr_class, arr_instance # arr_image, arr_compressed, arr_class, arr_instance
+        arr_image = np.array(pil_image)
+        arr_class = np.array(pil_class)
+        arr_instance = np.array(pil_instance) if pil_instance is not None else None
+        return arr_image, arr_class, arr_instance # arr_image, arr_compressed, arr_class, arr_instance
 
 
 def center_crop_arr(pil_list, image_size):

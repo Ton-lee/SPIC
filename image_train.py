@@ -44,7 +44,9 @@ def main():
         image_size=args.image_size,
         class_cond=args.class_cond,
         coarse_cond=args.coarse_cond,
-        is_train=args.is_train
+        is_train=args.is_train,
+        shifted=args.shifted,
+        args=args
     )
 
     logger.log("training...")
@@ -70,7 +72,8 @@ def main():
         schedule_sampler=schedule_sampler,
         weight_decay=args.weight_decay,
         lr_anneal_steps=args.lr_anneal_steps,
-        save_dir=args.save_dir
+        save_dir=args.save_dir,
+        args=args
     ).run_loop()
 
 
@@ -97,6 +100,9 @@ def create_argparser():
         fp16_scale_growth=1e-3,
         is_train=True,
         save_dir="",
+        shifted=False,  # 是否基于偏移的 SSM 进行生成，即基于视频上一帧的低分辨图像和这一帧的 SSM 生成这一帧的图像
+        condition="ssm",  # 条件类型，可取值为 ssm | sketch | layout
+        ssm_path="",  # 条件的路径，为方便起见将所有条件都称为 ssm
     )
     defaults.update(sr_model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

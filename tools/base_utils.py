@@ -121,10 +121,12 @@ def compress_image(image: Union[np.ndarray, str],
         return None
 
 
-def get_mIoU(label_gt: np.ndarray, label_pred: np.ndarray, labels: list, ignore_label=19):
+def get_mIoU(label_gt: np.ndarray, label_pred: np.ndarray, labels=None, ignore_label=19):
     """
     计算两个语义分割图的 mIoU
     """
+    if labels is None:
+        labels = list(set(label_gt.flatten().tolist()) | set(label_pred.flatten().tolist()))
     IoU = []
     for label_index in labels:
         union = np.bitwise_or(label_gt == label_index, label_pred == label_index) * (label_gt != ignore_label)

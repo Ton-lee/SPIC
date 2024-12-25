@@ -56,8 +56,10 @@ class TrainLoop:
         schedule_sampler=None,
         weight_decay=0.0,
         lr_anneal_steps=0,
-        save_dir=""
+        save_dir="",
+        args=None
     ):
+        self.args = args
         self.model = model
         self.diffusion = diffusion
         self.data = data
@@ -187,6 +189,9 @@ class TrainLoop:
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
             batch, cond = next(self.data)
+            if batch is None:
+                self.step += 1
+                continue
             cond = self.preprocess_input(cond)
             if 'coarse' in cond:
                 cond["compressed"] = cond["coarse"]
@@ -330,7 +335,8 @@ class TrainLoop:
 
     def preprocess_input(self, cond_):#, compressed):
         # move to GPU and change data types
-        cond_['label'] = cond_['label'].long()
+        if self.args.condition in ["ssm", "boundary", "sketch"]:
+            cond_['label'] = cond_['label'].long()
 
         # create one-hot label map
         label_map = cond_['label']
@@ -339,21 +345,24 @@ class TrainLoop:
             nc = self.num_classes+1
         else:
             nc = self.num_classes
-        input_label = th.FloatTensor(bs, nc, h, w).zero_()
-        input_semantics = input_label.scatter_(1, label_map, 1.0)
+        if self.args.condition in ["ssm", "boundary", "sketch"]:
+            input_label = th.FloatTensor(bs, nc, h, w).zero_()
+            input_semantics = input_label.scatter_(1, label_map, 1.0)
 
-        if self.num_classes == 19:
-            input_semantics = input_semantics[:, :-1, :, :] 
-            
-        # concatenate instance map if it exists
-        if 'instance' in cond_:
-            inst_map = cond_['instance']
-            instance_edge_map = self.get_edges(inst_map)
-            input_semantics = th.cat((input_semantics, instance_edge_map), dim=1)
+            if self.num_classes == 19:
+                input_semantics = input_semantics[:, :-1, :, :] 
+                
+            # concatenate instance map if it exists
+            if 'instance' in cond_:
+                inst_map = cond_['instance']
+                instance_edge_map = self.get_edges(inst_map)
+                input_semantics = th.cat((input_semantics, instance_edge_map), dim=1)
 
-        if self.drop_rate > 0.0:
-            mask = (th.rand([input_semantics.shape[0], 1, 1, 1]) > self.drop_rate).float()
-            input_semantics = input_semantics * mask
+            if self.drop_rate > 0.0:
+                mask = (th.rand([input_semantics.shape[0], 1, 1, 1]) > self.drop_rate).float()
+                input_semantics = input_semantics * mask
+        else:
+            input_semantics = label_map
 
         cond = {key: value for key, value in cond_.items() if key not in ['label', 'instance', 'path', 'label_ori']}
         cond['y'] = input_semantics

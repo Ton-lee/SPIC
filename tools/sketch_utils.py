@@ -18,6 +18,7 @@ import os
 import imageio
 from tools.base_utils import ssm2boundary, cityscapes_label2color, get_mIoU, get_ssm_colored_cityscapes
 from shapely import Point
+from scipy.ndimage import distance_transform_edt
 
 def calculate_ratio(edge_map, search_range=2, threshold_pixel=None):
     """
@@ -1282,3 +1283,16 @@ def preprocess_ssm(ssm, semantic_order, ignore_label=-1):
                 # 否则在上方填充 1
                 ssm_copied[line - 1, column - 1:column + 1] = label
     return ssm_copied
+
+
+def find_central_point(map_array):
+    # Step 1: 创建一个反转的布尔数组，True代表原来为False的区域
+
+    # Step 2: 计算每个点到最近False点的距离
+    distance = distance_transform_edt(map_array)
+
+    # Step 3: 找到距离最大的点
+    max_distance_index = np.unravel_index(np.argmax(distance), distance.shape)
+
+    # 返回该点的坐标
+    return max_distance_index

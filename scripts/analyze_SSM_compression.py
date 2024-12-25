@@ -6,16 +6,32 @@ import sys
 sys.path.append("/home/Users/dqy/Projects/SPIC")
 from tools.base_utils import suffix, compress_image, get_mIoU
 
+dataset = "ADE20k"
 
-# label_suffix = "(extended)"
-label_suffix = ""
-if label_suffix == "":
-    gt_folder = "/home/Users/dqy/Projects/SPIC/Result/pretrained/ori/labels_ori/"
+if dataset == "Cityscapes":
+    # 对 Cityscapes，采用以下路径设置
+    root_folder = "/home/Users/dqy/Dataset/Cityscapes/SSM_compressed/val/"  # 保存结果的路径
+    save_name = ""  # 保存结果的子目录
+    # label_suffix = "(extended)"
+    label_suffix = ""
+    if label_suffix == "":
+        gt_folder = f"/home/Users/dqy/Dataset/Cityscapes/SSM_compressed/val/labels_ori/"
+    else:
+        gt_folder = f"/home/Users/dqy/Projects/SPIC/Result/pretrained/ori/labels/"
+    test_total = 500
+elif dataset == "ADE20k":
+    # 对 ADE20k，采用以下路径设置
+    root_folder = "/home/Users/dqy/Projects/SPIC/Result_ADE20k/"
+    save_name = "annotations_compressed"
+    gt_folder = "/home/Users/dqy/Dataset/ADE20K/ADEChallengeData2016/annotations/validation/"  # 保存结果的路径
+    label_suffix = ""
+    test_total = 2000
 else:
-    gt_folder = "/home/Users/dqy/Projects/SPIC/Result/pretrained/ori/labels/"
-compressed_root = "/home/Users/dqy/Projects/SPIC/Result/pretrained/ori/"
-decompressed_root = "/home/Users/dqy/Projects/SPIC/Result/pretrained/ori/"
-test_total = 500
+    raise NotImplementedError(f"Dataset {dataset} not implemented!")
+# 路径设置结束
+
+compressed_root = f"{root_folder}/{save_name}"
+decompressed_root = f"{root_folder}/{save_name}"
 test_factor = {
     "jpeg": list(range(0, 101, 5)),
     "png": list(range(0, 10, 1)),
@@ -32,9 +48,10 @@ test_factor = {
 
 print("method\tfactor\tbpp\tmIoU")
 # for method in ["jpeg", "png", "webp", "bpg", "flif", "j2k", "cheng2020-anchor", "cheng2020-attn", "hific", "PostFilter-jpeg", "PostFilter-webp"]:
+# for method in ["jpeg", "png", "webp", "bpg", "flif", "j2k", "cheng2020-anchor", "cheng2020-attn", "hific"]:
 # for method in ["cheng2020-anchor", "cheng2020-attn", "hific"]:
-# for method in ["jpeg", "png", "webp", "bpg", "flif", "j2k"]:
-for method in ["PostFilter-jpeg", "PostFilter-webp"]:
+for method in ["jpeg", "png", "webp", "bpg", "flif", "j2k"]:
+# for method in ["PostFilter-jpeg", "PostFilter-webp"]:
     for factor in test_factor[method]:
         compressed_folder = os.path.join(compressed_root, f"labels{label_suffix}-{method}", f"compressed-{factor}")
         decompressed_folder = os.path.join(decompressed_root, f"labels{label_suffix}-{method}", f"decompressed-{factor}")

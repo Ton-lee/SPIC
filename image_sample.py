@@ -80,11 +80,14 @@ def main():
         random_crop=False,
         random_flip=False,
         is_train=False,
-        no_instance=args.no_instance
+        no_instance=args.no_instance,
+        args=args
     )
 
     if args.use_fp16:
         model.convert_to_fp16()
+    if args.series:
+        assert args.batch_size == 1, "Batch size must be 1 when generating video series"
     model.eval()
 
     image_path = os.path.join(args.results_path, 'images')
@@ -101,16 +104,28 @@ def main():
     pbar = tqdm.tqdm(total=args.num_samples)
     prefix = "ori" if "ori" in args.results_path else "noCom" if "noCom" in args.results_path else "noSSM" if "noSSM" in args.results_path else ""
     prefix = prefix + "-" + args.results_path.strip("/").split("/")[-1]
+    previous_generated = None  # 上一个样本所生成的图像
+    previous_video_name = ""  # 上一个样本所属的文件夹，即视频名称
+    video_name = ""
     for i, (batch, cond) in enumerate(data):
         pbar.update(args.batch_size)
         image = batch.cuda()  #((batch + 1.0) / 2.0).cuda()
         if not args.coarse_cond:
             cond['coarse'] = th.zeros_like(batch)
+        if args.series:
+            video_name = cond['path'][-1].split('/')[-2]
+            if not os.path.exists(os.path.join(image_path, video_name)): os.makedirs(os.path.join(image_path, video_name))
+            if not os.path.exists(os.path.join(label_path, video_name)): os.makedirs(os.path.join(label_path, video_name))
+            if not os.path.exists(os.path.join(sample_path, video_name)): os.makedirs(os.path.join(sample_path, video_name))
+            if not os.path.exists(os.path.join(compressed_path, video_name)): os.makedirs(os.path.join(compressed_path, video_name))
+            if cond['path'][0].split('/')[-2] == previous_video_name:  # 对序列进行生成且上一帧为同一段视频时，则修改 coarse 图像条件
+                cond['coarse'] = previous_generated[None, :, ::4, ::4] * 2 - 1
         label = (cond['label_ori'].float() / 255.0).cuda()  # 0~1, 255 被归一化到 1
         model_kwargs = preprocess_input(image, cond, num_classes=args.num_classes, large_size=args.large_size,
                                         small_size=args.small_size, compression_type=args.compression_type,
                                         compression_level=args.compression_level, prefix=prefix)
         compressed_img = (model_kwargs['compressed']).cuda()
+        # print(compressed_img.shape, compressed_img.min(), compressed_img.max())
 
         # set hyperparameter
         model_kwargs['s'] = args.s
@@ -135,24 +150,25 @@ def main():
                 model_kwargs=model_kwargs,
                 progress=True
             )
-        sample = (sample + 1) / 2.0
+        sample = (sample + 1) / 2.0  # 0~1
 
         gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
 
         all_samples.extend([sample.cpu().numpy() for sample in gathered_samples])
         if args.compression_type == 'down+bpg':
             compressed_img = F.interpolate(image, (args.small_size, args.large_size), mode="bilinear")
-
         for j in range(image.shape[0]):
             save_compressed(((compressed_img[j] + 1.0) / 2.0),
-                            os.path.join(compressed_path, cond['path'][j].split('/')[-1].split('.')[0]), args)
+                            os.path.join(compressed_path, video_name, cond['path'][j].split('/')[-1].split('.')[0]), args)
             tv.utils.save_image(((image[j] + 1.0) / 2.0),
-                                os.path.join(image_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
+                                os.path.join(image_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
             tv.utils.save_image(sample[j],
-                                os.path.join(sample_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
+                                os.path.join(sample_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
             tv.utils.save_image(label[j] * 255.0 / 35.0,  # 0~18 的标签和 255，保存为以 7 为灰度间隔方便可视化
-                                os.path.join(label_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-
+                                os.path.join(label_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
+        if args.series:
+            previous_generated = sample[-1]  # 以最后一帧作为后续生成的参考（对序列生成时）
+            previous_video_name = video_name  # 得到上一帧所属的文件夹
         # logger.log(f"created {len(all_samples) * args.batch_size} samples")
 
         if len(all_samples) * args.batch_size > args.num_samples:
@@ -255,6 +271,10 @@ def create_argparser():
         is_train=False,
         s=1.0,
         input_img=None,
+        series=False,  # 是否对视频序列进行推理
+        shifted=False,
+        condition="ssm",  # 条件类型，可取值为 ssm | sketch | layout
+        ssm_path=""
     )
     defaults.update(sr_model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()
