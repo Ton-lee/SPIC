@@ -91,6 +91,9 @@ def load_data(
         elif args.condition == "layout":
             classes = [x for x in labels_file if x.endswith('_layout.npy')]
             instances = None
+        elif args.condition == "sketch":
+            classes = [x for x in labels_file]
+            instances = None
         else:
             raise NotImplementedError(f"Not implemented condition: {args.condition}")
     elif dataset_mode == 'ade20k':
@@ -204,6 +207,11 @@ class ImageDataset(Dataset):
         self.shifted = args.shifted
         self.prefix = "shifted"
 
+        if dataset_mode == 'cityscapes':
+            self.semantic_priority = [11, 12, 18, 17, 13, 14, 15, 16, 6, 7, 4, 5, 8, 0, 1, 9, 2, 3, 10]
+        else:
+            self.semantic_priority = []
+
     def __len__(self):
         return len(self.local_images)
 
@@ -256,6 +264,18 @@ class ImageDataset(Dataset):
         out_dict = {}
         # print(len(self.local_classes))
         class_path = self.local_classes[idx]
+        # 对于 layout，进行随机掩蔽：修改对应文件路径（OAR 嵌入的通道表示）
+        if self.args.condition == 'layout' and self.num_classes == 16:
+            if self.args.random_eliminate:
+                # 随机选择一个数量，范围从 0 到 self.num_classes 之间
+                num_to_eliminate = random.randint(0, self.num_classes)
+                out_dict['eliminate_level'] = num_to_eliminate
+                if num_to_eliminate > 0:
+                    class_path = class_path.replace("L0", f"L{num_to_eliminate}")
+                # print("replace layout file with: ", class_path)
+            else:
+                if self.args.eliminate_level > 0:
+                    class_path = class_path.replace("L0", f"L{self.args.eliminate_level}")
         if self.args.condition in ["ssm", "boundary", "sketch"]:
             with bf.BlobFile(class_path, "rb") as f:
                 pil_class = Image.open(f)
@@ -313,7 +333,46 @@ class ImageDataset(Dataset):
         if self.num_classes == 19: 
             arr_class[arr_class == 255] = 19
 
-        if self.args.condition == "boundary":
+        # arr_class = np.ones_like(arr_class) * 19  # 测试将所有语义标签掩蔽时的性能
+
+        # 对语义分割图，随机进行语义掩蔽
+        if self.args.condition == 'ssm':
+            if self.args.random_eliminate:
+                # 随机选择一个数量，范围从 0 到 self.num_classes 之间
+                num_to_eliminate = random.randint(0, self.num_classes)
+                out_dict['eliminate_level'] = num_to_eliminate
+                if num_to_eliminate > 0:
+                    # 从 0 到 self.num_classes - 1 消除 num_to_eliminate 个类标签
+                    # eliminate_semantics = random.sample(range(self.num_classes), num_to_eliminate)  # 随机选取通道进行掩蔽
+                    eliminate_semantics = self.semantic_priority[-num_to_eliminate:]  # 掩蔽不重要的几种语义
+                    # 将 arr_class 中对应所选类标签的值设为 self.num_classes
+                    for idx in eliminate_semantics:
+                        arr_class[arr_class == idx] = self.num_classes
+            else:
+                if self.args.eliminate_level > 0:
+                    eliminate_semantics = self.semantic_priority[-self.args.eliminate_level:]  # 掩蔽不重要的几种语义
+                    for idx in eliminate_semantics:
+                        arr_class[arr_class == idx] = self.num_classes
+        # 对 OAR layout，随机进行语义掩蔽（多通道语义分割图的表示）
+        if self.args.condition == 'layout' and self.num_classes == 19:
+            if self.args.random_eliminate:
+                # 随机选择一个数量，范围从 0 到 self.num_classes 之间
+                num_to_eliminate = random.randint(0, self.num_classes)
+                out_dict['eliminate_level'] = num_to_eliminate
+                if num_to_eliminate > 0:
+                    # 从 0 到 self.num_classes - 1 消除 num_to_eliminate 个类标签
+                    # eliminate_semantics = random.sample(range(self.num_classes), num_to_eliminate)  # 随机选取通道进行掩蔽
+                    eliminate_semantics = self.semantic_priority[-num_to_eliminate:]  # 掩蔽不重要的几种语义
+                    # 将 arr_class 中对应所选类标签的值设为 self.num_classes
+                    for idx in eliminate_semantics:
+                        arr_class[:, :, idx] = 0
+            else:
+                if self.args.eliminate_level > 0:
+                    eliminate_semantics = self.semantic_priority[-self.args.eliminate_level:]  # 掩蔽不重要的几种语义
+                    for idx in eliminate_semantics:
+                        arr_class[:, :, idx] = 0
+
+        if self.args.condition in ["boundary", "sketch"]:
             arr_class = 1 - (arr_class / 255).astype("int")
         if self.args.condition in ["ssm", "boundary", "sketch"]:  # 图像形式的标签需要添加一个通道
             out_dict['label'] = arr_class[None, ]

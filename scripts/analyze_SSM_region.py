@@ -10,7 +10,7 @@ from tools.base_utils import ade20k_color2label, ade20k_label2color, ade20k_sema
 from tools.base_utils import get_ade20k_ssm_paths
 from tools.base_utils import get_cityscapes_ssm_paths, cityscapes_semantic_orders
 
-test_dataset = "cityscapes"
+test_dataset = "ade20k"
 test_size = [512, 256]
 test_factor = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
 save_root = "/home/Users/dqy/Dataset/Cityscapes/SSM_compressed/val/labels-region"

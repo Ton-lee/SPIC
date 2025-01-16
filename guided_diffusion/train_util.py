@@ -341,8 +341,10 @@ class TrainLoop:
         # create one-hot label map
         label_map = cond_['label']
         bs, _, h, w = label_map.size()
-        if self.num_classes == 19:
+        if self.num_classes == 19:  # 对于 Cityscapes 数据集的语义分割图，由于先天存在忽略区域，因此通道数始终增加 1
             nc = self.num_classes+1
+        elif self.args.random_eliminate:  # 对于 Cityscapes 数据集的其他语义表征和其他数据集，使用随机忽略语义区域时，通道数增加 1
+            nc = self.num_classes + 1
         else:
             nc = self.num_classes
         if self.args.condition in ["ssm", "boundary", "sketch"]:
@@ -362,6 +364,7 @@ class TrainLoop:
                 mask = (th.rand([input_semantics.shape[0], 1, 1, 1]) > self.drop_rate).float()
                 input_semantics = input_semantics * mask
         else:
+            assert self.args.condition == "layout"
             input_semantics = label_map
 
         cond = {key: value for key, value in cond_.items() if key not in ['label', 'instance', 'path', 'label_ori']}

@@ -591,7 +591,7 @@ def get_sketch(edge, neighbor=4, threshold_fit=1, return_base_edge=False, return
     """
     对指定单像素边缘图像进行素描图抽象
     :param edge: 单像素二值化边缘，边缘部分为1，其余为0
-    :param neighbor: 邻域搜索时基于4邻域或8邻域。算法会根据该设置首先对边缘进行修正
+    :param neighbor: 邻域搜索时基于4邻域或8邻域。算法会根据该设置首先对边缘进行修正。8邻域复杂度较高
     :param threshold_fit: 用于直线段拟合时的分段阈值。阈值越小，对原边缘的拟合越贴近
     :param return_base_edge: 是否返回基本边缘图像，即预处理后的边缘，与输入边缘可能不一致
     :param return_recorder: 是否返回分支记录的结果

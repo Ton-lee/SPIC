@@ -123,7 +123,7 @@ def main():
         label = (cond['label_ori'].float() / 255.0).cuda()  # 0~1, 255 被归一化到 1
         model_kwargs = preprocess_input(image, cond, num_classes=args.num_classes, large_size=args.large_size,
                                         small_size=args.small_size, compression_type=args.compression_type,
-                                        compression_level=args.compression_level, prefix=prefix)
+                                        compression_level=args.compression_level, prefix=prefix, args=args)
         compressed_img = (model_kwargs['compressed']).cuda()
         # print(compressed_img.shape, compressed_img.min(), compressed_img.max())
 
@@ -140,7 +140,7 @@ def main():
                 noise=F.interpolate(compressed_img, (image.shape[2], image.shape[3]), mode="bilinear"),
                 clip_denoised=args.clip_denoised,
                 model_kwargs=model_kwargs,
-                progress=True
+                progress=False
             )
         else:
             sample = sample_fn(
@@ -148,7 +148,7 @@ def main():
                 (args.batch_size, 3, image.shape[2], image.shape[3]),
                 clip_denoised=args.clip_denoised,
                 model_kwargs=model_kwargs,
-                progress=True
+                progress=False
             )
         sample = (sample + 1) / 2.0  # 0~1
 
@@ -164,8 +164,9 @@ def main():
                                 os.path.join(image_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
             tv.utils.save_image(sample[j],
                                 os.path.join(sample_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-            tv.utils.save_image(label[j] * 255.0 / 35.0,  # 0~18 的标签和 255，保存为以 7 为灰度间隔方便可视化
-                                os.path.join(label_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
+            if args.condition != "layout":
+                tv.utils.save_image(label[j] * 255.0 / 35.0,  # 0~18 的标签和 255，保存为以 7 为灰度间隔方便可视化
+                                    os.path.join(label_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
         if args.series:
             previous_generated = sample[-1]  # 以最后一帧作为后续生成的参考（对序列生成时）
             previous_video_name = video_name  # 得到上一帧所属的文件夹
@@ -191,10 +192,11 @@ def gaussian_kernel(kernel_size=3, sigma=1.0):
     return two_d_kernel
 
 
-def preprocess_input(image, comp_, num_classes, large_size, small_size, compression_type, compression_level, prefix=""):
+def preprocess_input(image, comp_, num_classes, large_size, small_size, compression_type, compression_level, prefix="", args=None):
     temp_folder = "/home/Users/dqy/Projects/SPIC/temp/"
     # move to GPU and change data types
-    comp_['label'] = comp_['label'].long()
+    if args.condition in ["ssm", "boundary", "sketch"]:
+        comp_['label'] = comp_['label'].long()
 
     # create one-hot label map
     label_map = comp_['label']
@@ -203,17 +205,22 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
         nc = num_classes + 1
     else:
         nc = num_classes
-    input_label = th.FloatTensor(bs, nc, h, w).zero_()
-    input_semantics = input_label.scatter_(1, label_map, 1.0)
+    if args.condition in ["ssm", "boundary", "sketch"]:
+        input_label = th.FloatTensor(bs, nc, h, w).zero_()
+        input_semantics = input_label.scatter_(1, label_map, 1.0)
+        if num_classes == 19:
+            input_semantics = input_semantics[:, :-1, :, :]
 
-    if num_classes == 19:
-        input_semantics = input_semantics[:, :-1, :, :]
+            # concatenate instance map if it exists
+        if 'instance' in comp_:
+            inst_map = comp_['instance']
+            instance_edge_map = get_edges(inst_map)
+            input_semantics = th.cat((input_semantics, instance_edge_map), dim=1)
+    else:
+        assert args.condition == "layout"
+        input_semantics = label_map
 
-        # concatenate instance map if it exists
-    if 'instance' in comp_:
-        inst_map = comp_['instance']
-        instance_edge_map = get_edges(inst_map)
-        input_semantics = th.cat((input_semantics, instance_edge_map), dim=1)
+
 
     cond = {key: value for key, value in comp_.items() if
             key not in ['label', 'instance', 'path', 'label_ori', 'coarse']}
@@ -274,7 +281,9 @@ def create_argparser():
         series=False,  # 是否对视频序列进行推理
         shifted=False,
         condition="ssm",  # 条件类型，可取值为 ssm | sketch | layout
-        ssm_path=""
+        ssm_path="",
+        random_eliminate=False,  # 随机对语义区域进行掩蔽
+        eliminate_level=0,  # 掩蔽语义区域的等级，仅在 random_eliminate=False 时起效。0表示不掩蔽语义区域
     )
     defaults.update(sr_model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

@@ -25,7 +25,7 @@ def calculate_bpp(coarse_path, ext=".bpg", size=512*256):
                 file_size = os.path.getsize(file_path)
                 bpp += file_size*8/(size)
                 count += 1
-    return bpp/count
+    return bpp/(count+1e-10)
 
 def flif_compression(input_path, output_path):
     for root, dirs, files in os.walk(input_path):

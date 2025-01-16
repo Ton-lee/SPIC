@@ -103,6 +103,8 @@ def create_argparser():
         shifted=False,  # 是否基于偏移的 SSM 进行生成，即基于视频上一帧的低分辨图像和这一帧的 SSM 生成这一帧的图像
         condition="ssm",  # 条件类型，可取值为 ssm | sketch | layout
         ssm_path="",  # 条件的路径，为方便起见将所有条件都称为 ssm
+        random_eliminate=False,  # 随机对语义区域进行掩蔽
+        eliminate_level=0,  # 掩蔽语义区域的等级，仅在 random_eliminate=False 时起效
     )
     defaults.update(sr_model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

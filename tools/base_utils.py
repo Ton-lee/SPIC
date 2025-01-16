@@ -9,6 +9,7 @@ from openjpeg import encode, decode
 from typing import Union
 from shapely import Polygon, MultiPoint
 from matplotlib.path import Path
+from skimage import measure
 
 temp_folder = "/home/Users/dqy/Projects/SPIC/temp"
 suffix = {
@@ -299,3 +300,23 @@ def get_semantic_orders(ssm: np.ndarray, ignore_label=None):
     frequencies = counter.most_common()
     semantic_order = [frequency[0] for frequency in frequencies if frequency[0] != ignore_label]
     return semantic_order[::-1]  # 低频次标签具有更高优先级
+
+
+def sample_color(image, boundary, alpha=1.0):
+    """
+    从给定的图像中采样像素点作为图像的稀疏表征
+    :param image: RGB 图像，(H,W,3)
+    :param boundary: 边界图，(H,W)，0 表示非边界、1表示边界像素点，边界四邻域连通
+    :param alpha: 码率损失与 MSE 损失的权重，优化目标为码率损失+alpha*MSE，更高的alpha表示更高的采样细节
+    :return: 采样点坐标和颜色
+    """
+    # 根据边界像素点获取图像区域连通性
+    labeled_image, num_labels = measure.label(1 - boundary, connectivity=1)
+    # 考察每个连通区域，以像素平均 RGB 值作为初始颜色采样点
+    sample_points = []
+    for label in range(1, num_labels + 1):
+        mask = labeled_image == label
+        region_points = np.argwhere(mask)
+        region_color = np.mean(image[region_points[:, 0], region_points[:, 1], :], axis=0)
+        sample_points.append((region_points[0, 0], region_points[0, 1], tuple(region_color.astype(int))))
+

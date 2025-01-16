@@ -847,7 +847,7 @@ def _process_phase(edge, h, w, phase, neighbor=4):
 循环进行四种不同的处理
     """
     phase %= 4
-    if phase == 0 and neighbor == 4:  # 如果按4邻域计算，则需要对斜点进行填充
+    if phase == 0 and neighbor == 4:  # 如果按4邻域计算，则需要对斜点进行填充。如果原图非4邻域连接则必须使用该操作
         return _process_fill(edge, h, w)
     if phase == 1:
         return _process_del(edge, h, w, neighbor=neighbor)

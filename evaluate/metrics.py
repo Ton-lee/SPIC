@@ -33,16 +33,24 @@ if __name__ == '__main__':
     BPP_SSM = mfunc.calculate_bpp(os.path.join(result_path, "labels"), ext=".flif")
     
     ##### generate the SSM with internimage
-    print("Evaluating mIOU - SS by InternImage")
-    command = (f"cd {internimage_path} && python3 segmentation/image_demo.py "
-               f"{result_path}/samples "
-               f"--palette cityscapes "
-               f"--opacity 1 "
-               f"segmentation/configs/cityscapes/upernet_internimage_xl_512x1024_160k_mapillary2cityscapes.py "
-               f"segmentation/checkpoint_dir/seg/upernet_internimage_xl_512x1024_160k_mapillary2cityscapes.pth "
-               f"--out {result_path}/sem_generated")
-    mfunc.run_command_with_conda_env("internimage", command)
-    
+    finished = False
+    image_dir = f"{result_path}/samples"
+    save_dir = f"{result_path}/sem_generated"
+    if os.path.exists(save_dir):
+        if len(os.listdir(save_dir)) == len(os.listdir(image_dir)):
+            finished = True
+    if not finished:
+        print("Evaluating mIOU - SS by InternImage")
+        command = (f"cd {internimage_path} && python3 segmentation/image_demo.py "
+                   f"{result_path}/samples "
+                   f"--palette cityscapes "
+                   f"--opacity 1 "
+                   f"segmentation/configs/cityscapes/upernet_internimage_xl_512x1024_160k_mapillary2cityscapes.py "
+                   f"segmentation/checkpoint_dir/seg/upernet_internimage_xl_512x1024_160k_mapillary2cityscapes.pth "
+                   f"--out {result_path}/sem_generated")
+        mfunc.run_command_with_conda_env("internimage", command)
+    else:
+        print("Evaluating mIOU - SS by InternImage (use previous results)")
     ##### evaluate the mIoU
     print("Evaluating mIOU")
     true_SSM = mfunc.get_semantic_maps(os.path.join(result_path, "labels/"), interimage=False)
