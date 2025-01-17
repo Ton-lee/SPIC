@@ -1,6 +1,10 @@
 """基本工具，包括图像压缩命令等"""
 import collections
 import os
+default_n_threads = 8
+os.environ['OPENBLAS_NUM_THREADS'] = f"{default_n_threads}"
+os.environ['MKL_NUM_THREADS'] = f"{default_n_threads}"
+os.environ['OMP_NUM_THREADS'] = f"{default_n_threads}"
 import cv2
 import numpy as np
 import time
@@ -10,6 +14,13 @@ from typing import Union
 from shapely import Polygon, MultiPoint
 from matplotlib.path import Path
 from skimage import measure
+from sklearn.cluster import KMeans
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import train_test_split
 
 temp_folder = "/home/Users/dqy/Projects/SPIC/temp"
 suffix = {
@@ -302,21 +313,298 @@ def get_semantic_orders(ssm: np.ndarray, ignore_label=None):
     return semantic_order[::-1]  # 低频次标签具有更高优先级
 
 
+def cost_driven_classification(X, C, num_classes, learning_rate=0.01, max_iter=1000, tol=1e-6):
+    """
+    最小化分类代价的线性分类算法。
+
+    Parameters:
+    - X: np.ndarray, 数据点的二维坐标 (N x 2)。
+    - C: np.ndarray, 分类代价矩阵 (N x num_classes)，C[i, k] 表示点 i 分类到类别 k 的代价。
+    - num_classes: int, 类别数量。
+    - learning_rate: float, 梯度下降学习率。
+    - max_iter: int, 最大迭代次数。
+    - tol: float, 收敛判定阈值。
+
+    Returns:
+    - weights: np.ndarray, 分类界面参数 (num_classes x 3)。
+    - history: list, 每次迭代的平均分类代价。
+    - predicted_classes: np.ndarray, 每个样本被分到的类别
+    """
+    # 初始化参数
+    N, d = X.shape  # 数据点数量和特征维度
+    weights = np.random.randn(num_classes, d + 1)  # 每个类别一个线性分类器，包含偏置项
+    X_h = np.hstack([X, np.ones((N, 1))])  # 扩展输入数据为齐次坐标
+    history = []
+    predicted_classes = np.zeros((N,))
+    for iteration in range(max_iter):
+        # 分类阶段
+        scores = X_h @ weights.T  # 计算每个点对每个类别的分数 (N x num_classes)
+        probs = np.exp(scores) / np.sum(np.exp(scores), axis=1, keepdims=True)
+        predicted_classes = np.argmax(probs, axis=1)  # 每个点的预测类别 (N,)
+
+        # 计算平均分类代价
+        avg_cost = np.mean(C[np.arange(N), predicted_classes] * probs[np.arange(N), predicted_classes])
+        history.append(avg_cost)
+
+        # 判断收敛
+        if iteration > 0 and abs(history[-1] - history[-2]) < tol:
+            print(f"Converged at iteration {iteration}.")
+            break
+
+        # 梯度计算与参数更新
+        gradients = np.zeros_like(weights)  # 初始化梯度 (num_classes x (d+1))
+        for k in range(num_classes):
+            indices = (predicted_classes == k)  # 找到被分类为类别 k 的数据点
+            gradient_k = -np.sum(X_h[indices] * C[indices, k:k+1], axis=0)  # 累加误分类的点，以误分类权重加权
+            gradients[k] = gradient_k
+
+        # 梯度下降更新
+        weights -= learning_rate * gradients
+
+    return weights, history, predicted_classes
+
+
+def softmax(z):
+    return np.exp(z) / np.sum(np.exp(z), axis=1, keepdims=True)
+
+
+def compute_loss(X, C, W, b):
+    # 计算线性输出
+    Y = np.dot(X, W) + b  # N x k
+    # 计算softmax
+    softmax_output = softmax(Y)  # N x k
+    # 计算交叉熵损失
+    loss = -np.sum(C * np.log(softmax_output)) / X.shape[0]
+    return loss
+
+
+def compute_gradients(X, C, W, b):
+    # 计算线性输出
+    Y = np.dot(X, W) + b  # N x k
+    # 计算softmax
+    softmax_output = softmax(Y)  # N x k
+    # 计算梯度
+    grad_W = np.dot(X.T, (softmax_output - C)) / X.shape[0]  # 3 x k
+    grad_b = np.sum(softmax_output - C, axis=0) / X.shape[0]  # k
+    return grad_W, grad_b
+
+
+def train_classifier_naive(X, C, learning_rate=0.01, epochs=100):
+    N, D = X.shape
+    k = C.shape[1]
+
+    # 初始化参数
+    W = np.random.randn(D, k) * 0.01
+    b = np.zeros(k)
+
+    for epoch in range(epochs):
+        # 计算损失
+        loss = compute_loss(X, C, W, b)
+        # 计算梯度
+        grad_W, grad_b = compute_gradients(X, C, W, b)
+
+        # 更新权重和偏置
+        W -= learning_rate * grad_W
+        b -= learning_rate * grad_b
+
+        # 每10步输出一次损失
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}, Loss: {loss}")
+
+    return W, b
+
+
+# 定义一层的神经网络模型
+class LinearClassifier(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(LinearClassifier, self).__init__()
+        self.fc = nn.Linear(input_dim, output_dim)
+
+    def forward(self, x):
+        return torch.softmax(self.fc(x), dim=1)
+
+
+# 训练函数
+def train_classifier(X, C, model, criterion, optimizer, epochs=100, batch_size=32):
+    N = X.shape[0]
+    for epoch in range(epochs):
+        permutation = torch.randperm(N)
+
+        for i in range(0, N, batch_size):
+            indices = permutation[i:i + batch_size]
+            batch_X, batch_C = X[indices], C[indices]
+
+            # 正向传播
+            outputs = model(batch_X)
+            # loss = criterion(outputs, batch_C)
+            loss = -torch.mean(torch.log(outputs + 1e-4) * (1 - batch_C))
+
+            # 反向传播和优化
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        # 每10步输出一次损失
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}, Loss: {loss.item()}")
+    weights = model.fc.weight.data.numpy()
+    bias = model.fc.bias.data.numpy()
+    return weights, bias
+
+
+def train_weighted_svm(X, y, sample_weights, kernel='linear', C=1.0):
+    """
+    训练一个带有样本权重的SVM模型，并返回模型的准确度、训练后的权重和偏置。
+
+    参数:
+    - X: 特征矩阵，形状为 (N, D)，N 是样本数，D 是特征数
+    - y: 标签向量，形状为 (N,)，包含每个样本的分类标签
+    - sample_weights: 样本权重，形状为 (N,)，每个样本对应的权重
+    - kernel: SVM的核函数，默认是'linear'（线性核）
+    - C: 正则化参数，默认是1.0
+
+    返回:
+    - accuracy: 训练集的准确度
+    - weights: 训练后的权重
+    - bias: 训练后的偏置
+    """
+
+    # 创建并训练SVM模型
+    svm = SVC(kernel=kernel, C=C, decision_function_shape='ovr')
+    svm.fit(X, y, sample_weight=sample_weights)  # 使用样本权重训练模型
+
+    # 在训练集上进行预测
+    y_pred = svm.predict(X)
+
+    # 计算准确度
+    accuracy = accuracy_score(y, y_pred)
+
+    # 获取训练后的权重和偏置
+    weights = svm.coef_
+    bias = svm.intercept_
+
+    return weights, bias, y_pred
+
+
+def get_center(positions, colors, k):
+    """找到聚类中心，使像素点到与其最近的中心的 RGB 值的 MSE 平均值最小"""
+    N, D = positions.shape
+    # STEP 1: 对像素点颜色进行 k-means 聚类，找到 k 个颜色中心；
+    # 进行 k-means 聚类
+    kmeans = KMeans(n_clusters=k, random_state=0, n_init=10)
+    kmeans.fit(colors)
+    # 获取 k-means 聚类结果
+    color_centers = kmeans.cluster_centers_
+    # STEP 2: 计算各个像素点颜色与聚类中心的 MSE
+    mse_matrix = np.zeros((N, k))
+    for i, color in enumerate(colors):
+        mse_matrix[i] = np.mean((color_centers - colors[i, :]) ** 2, axis=-1)
+    gt = np.argmin(mse_matrix, axis=1)
+    sample_weights = mse_matrix.max(axis=1) - mse_matrix[np.arange(N), gt]
+    # STEP 3: 带权的线性分类
+    # SUBSTEP 1: 简单算法
+    # weights, history, classes = cost_driven_classification(positions, mse_matrix, k)
+    # Y = np.dot(positions, weights) + bias
+    # classes = np.argmax(Y, axis=1)
+    # SUBSTEP 2: 简单线性分类器
+    # weights, bias = train_classifier_naive(positions, mse_matrix)
+    # Y = np.dot(positions, weights) + bias
+    # classes = np.argmax(Y, axis=1)
+    # SUBSTEP 3: 单层感知机
+    # model = LinearClassifier(D, k)  # 输入维度为3，输出维度为k（类别数）
+    # criterion = nn.BCEWithLogitsLoss()  # 二元交叉熵损失（适用于多标签问题）
+    # optimizer = optim.SGD(model.parameters(), lr=0.001)
+    # weights, bias = train_classifier(torch.Tensor(positions), torch.Tensor(mse_matrix), model, criterion, optimizer, epochs=100)
+    # with torch.no_grad():
+    #     Y = model(torch.Tensor(positions)).numpy()
+    # classes = np.argmax(Y, axis=1)
+    # SUBSTEP 4: SVM
+    weights, bias, classes = train_weighted_svm(positions, gt, sample_weights)
+    # STEP 4: 将权重连通偏置返回
+    mse = mse_matrix[np.arange(N), classes].mean()
+    weights = np.concatenate([weights, bias[:, None]], axis=1)
+    return color_centers, weights, classes
+
+
 def sample_color(image, boundary, alpha=1.0):
     """
     从给定的图像中采样像素点作为图像的稀疏表征
-    :param image: RGB 图像，(H,W,3)
+    :param image: RGB 图像，(H,W,3)，归一化到0~1
     :param boundary: 边界图，(H,W)，0 表示非边界、1表示边界像素点，边界四邻域连通
     :param alpha: 码率损失与 MSE 损失的权重，优化目标为码率损失+alpha*MSE，更高的alpha表示更高的采样细节
     :return: 采样点坐标和颜色
     """
+    # STEP 1: 获取图像区域连通性
+    H, W = image.shape[:2]
     # 根据边界像素点获取图像区域连通性
-    labeled_image, num_labels = measure.label(1 - boundary, connectivity=1)
+    labeled_image, num_labels = measure.label(1 - boundary, connectivity=1, return_num=True)
+    # STEP 2: 对每个区域求平均 RGB 作为初始颜色采样点（k-means: k=1）
     # 考察每个连通区域，以像素平均 RGB 值作为初始颜色采样点
     sample_points = []
     for label in range(1, num_labels + 1):
         mask = labeled_image == label
         region_points = np.argwhere(mask)
+        weight = (0, 0, 0)
         region_color = np.mean(image[region_points[:, 0], region_points[:, 1], :], axis=0)
-        sample_points.append((region_points[0, 0], region_points[0, 1], tuple(region_color.astype(int))))
+        sample_points.append([(weight, tuple(region_color))])
+    # STEP 3: 根据采样点计算数据量和误差
+    # 计算采样点的数据量：坐标通过定长量化进行编码，颜色采用 24 bit 进行编码
+    data_size = num_labels * (np.ceil(np.log2(H)) + np.ceil(np.log2(W)) + 24)
+    # 分别计算各个label对应区域像素点与采样点之间的 MSE
+    mse_values = []
+    for label in range(1, num_labels + 1):
+        mask = labeled_image == label
+        mse_values.append(
+            np.mean(np.square(
+                image[mask] - np.array(sample_points[label - 1][0][1])[None])))
+    # 对数据量和平均 mse 进行加权，获得总损失
+    loss = data_size + alpha * sum(mse_values) / num_labels
+    tried = [False] * num_labels  # 记录
+    k = [1] * num_labels  # 每个区域的采样点个数
+    # STEP 4: 按 mse 降序排序，依次考察每个连通区域，计算增加一个采样点后的损失
+    while not all(tried):  # 直到尝试了所有的连通区域
+        # 按照 mse 由高到低对各个区域降序排列，获取排序后的区域序号
+        sorted_indices = np.argsort(mse_values)[::-1]
+        sorted_indices = [sorted_index + 1 for sorted_index in sorted_indices]  # 按优先级由高到低排列的区域序号（1到N）
+        # 依次考察各个区域
+        for label in sorted_indices:
+            # 获取该区域的像素RGB值
+            mask = labeled_image == label
+            region_points = np.argwhere(mask) / np.array((H, W))  # 将坐标也归一化到 0~1
+            region_pixels = image[mask]
+            # 找到分类界面和颜色
+            color_centers, weights, classes = get_center(region_points, region_pixels, k[label - 1] + 1)
+            # 计算区域内各个像素点与距离最近的聚类中心的颜色 MSE
+            class_colors = color_centers[classes, :]
+            mse_value = np.mean(np.square(region_pixels - class_colors))
+            # 计算 loss 增加量
+            delta_mse = mse_value - mse_values[label - 1]
+            delta_data_amount = np.ceil(np.log2(H)) + np.ceil(np.log2(W)) + 24
+            delta_loss = delta_data_amount + alpha * delta_mse / num_labels
+            if delta_loss < 0:  # loss 降低
+                # 更新区域 MSE
+                mse_values[label - 1] = mse_value
+                # 更新区域的聚类点数
+                k[label - 1] += 1
+                # 更新区域的采样点
+                sample_points[label - 1] = [(weights[i], color_centers[i])
+                                            for i in range(k[label - 1])]
+                tried = [False] * num_labels
+                break
+            else:  # loss 没有有效降低，考察下一个重要的区域
+                tried[label - 1] = True
+    return sample_points
 
+
+def test_color_sample():
+    image = cv2.imread("/home/Users/dqy/Dataset/Cityscapes/leftImg8bit_merged(512x256)/val/"
+                       "frankfurt_000000_000294_leftImg8bit.png")[:, :, ::-1] / 255
+    boundary = cv2.imread("/home/Users/dqy/Dataset/Cityscapes/boundary_compressed/val"
+                          "/ori/frankfurt_000000_000294_gtFine_instanceBoundary.png")[:, :, 0]
+    boundary = 1 - boundary.astype('int') / 255
+    sample_points = sample_color(image, boundary, alpha=1)
+    print(sample_points)
+
+
+if __name__ == '__main__':
+    test_color_sample()
