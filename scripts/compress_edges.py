@@ -7,7 +7,7 @@ sys.path.append("/home/Users/dqy/Projects/SPIC/")
 import cv2
 from tools.sketch_func import get_sketch
 from tools.sketch_utils import save_branch_compressed
-from tools.utils import save_graph_compressed, rearrange_graph
+from tools.utils import save_graph_compressed, rearrange_graph, save_graph_compressed_bounding
 
 
 edge_root = "/home/Users/dqy/Dataset/Cityscapes/edges/"
@@ -26,7 +26,8 @@ def compress_sketch(edge, threshold, code_path, decode_path):
                                                                  return_recorder=True,
                                                                  threshold_length=1,
                                                                  valid_shift=[0, 1, 3],
-                                                                 abort_stick=False)
+                                                                 abort_stick=False,
+                                                                 merge_neighbor=True)
     # 以分支抽象的格式保存压缩后的素描图
     # save_path = code_path
     # save_branch_compressed(branch_object, save_path, [H, W])
@@ -34,7 +35,8 @@ def compress_sketch(edge, threshold, code_path, decode_path):
     # 以图格式保存压缩后的素描图
     graph = {"positions": points, "connections": connections}
     sketch_graph_rearranged = rearrange_graph(graph)
-    save_graph_compressed(sketch_graph_rearranged, code_path, [H, W])
+    # save_graph_compressed(sketch_graph_rearranged, code_path, [H, W])
+    save_graph_compressed_bounding(sketch_graph_rearranged, code_path, [H, W], branch_object)
     bpp = os.path.getsize(code_path) * 8 / H / W
     cv2.imwrite(decode_path, (1 - (edge_sketch.sum(axis=2)>0).astype('uint8')) * 255)
     return bpp
