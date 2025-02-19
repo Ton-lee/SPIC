@@ -1296,3 +1296,59 @@ def find_central_point(map_array):
 
     # 返回该点的坐标
     return max_distance_index
+
+
+# 定义曼哈顿距离
+def manhattan_distance(point1, point2):
+    return abs(point1[0] - point2[0]) + abs(point1[1] - point2[1])
+
+
+# 网格化方法来查找近距离点对
+def find_nearby_pairs(points, threshold=2):
+    # 网格的大小，选择3是因为曼哈顿距离最大为2
+    grid_size = threshold + 1
+
+    # 用字典存储每个网格中的点
+    grid = {}
+
+    def get_grid_key(point):
+        return (point[0] // grid_size, point[1] // grid_size)
+
+    nearby_pairs = []
+
+    # 将点加入相应的网格
+    for point in points:
+        key = get_grid_key(point)
+        if key not in grid:
+            grid[key] = []
+        grid[key].append(point)
+
+    # 检查每个点和它所在网格及邻近网格的点
+    for point in points:
+        key = get_grid_key(point)
+        # 检查当前网格和相邻的4个网格（不考虑所有8个邻域以避免重复）
+        for dx, dy in ((0, 0), (1, 0), (-1, 1), (0, 1), (1, 1)):
+            neighbor_key = (key[0] + dx, key[1] + dy)
+            if neighbor_key in grid:
+                for neighbor in grid[neighbor_key]:
+                    if neighbor[0] < point[0]:  # 不考虑位于该点上方的点
+                        continue
+                    if neighbor[0] == point[0] and neighbor[1] < point[1]:  # 不考虑位于该点同行左边的点
+                        continue
+                    if point != neighbor and manhattan_distance(point, neighbor) <= threshold:
+                        nearby_pairs.append((point, neighbor))
+
+    return nearby_pairs
+
+
+def find_nearby_pairs_naive(points, threshold):
+    nearby_pairs = []
+    n = len(points)
+
+    # 遍历每个点与其他点进行比较
+    for i in range(n):
+        for j in range(i + 1, n):
+            if manhattan_distance(points[i], points[j]) <= threshold:
+                nearby_pairs.append((points[i], points[j]))
+
+    return nearby_pairs

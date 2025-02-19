@@ -1989,7 +1989,7 @@ def rearrange_graph(graph):
         connections[index, :] = 0
         connections[:, index] = 0
     positions = positions[indexes, :]
-    connections = connections_copy[np.array(indexes)[None, :], np.array(indexes)[:, None]]
+    connections = connections_copy[np.array(indexes)[:, None], np.array(indexes)[None, :]]
     graph_rearranged = {'positions': positions, 'connections': connections}
     return graph_rearranged
 
@@ -2034,6 +2034,79 @@ def save_graph_compressed(graph, save_path="", size=None):
     M = int(np.ceil(np.log2(N)))  # 对一个连接关系坐标进行编码需要的比特数
     # 获取01码流
     bins_W = dec2bin(w-1, 11)
+    bins_H = dec2bin(h - 1, 11)
+    bins_x_min = dec2bin(x_min, 11)
+    bins_y_min = dec2bin(y_min, 11)
+    bins_x_bit = dec2bin(bit_x, 4)
+    bins_y_bit = dec2bin(bit_y, 4)
+    bins_N = dec2bin(N, 16)
+    bins_C = dec2bin(C, M)
+    bins_x_delta = [dec2bin(item, bit_x) for item in x_delta]
+    bins_y_delta = [dec2bin(item, bit_y) for item in y_delta]
+    # print("Points: ", len(''.join(bins_x_delta) + ''.join(bins_y_delta)))
+    bins_sub_diag_pos = [dec2bin(item, M) for item in sub_diag_pos]
+    bins_other_pos = [dec2bin(item, M) for item in other_pos.flatten()]
+    bins = bins_W + bins_H + bins_x_min + bins_y_min + bins_x_bit + bins_y_bit \
+        + bins_N + bins_C + ''.join(bins_x_delta) + ''.join(bins_y_delta) \
+        + ''.join(bins_sub_diag_pos) + ''.join(bins_other_pos)
+    # print("Total: ", len(bins))
+    bytes_series = bitstring2bytes(bins)
+    if save_path != "":
+        if not os.path.exists(os.path.dirname(save_path)):
+            os.makedirs(os.path.dirname(save_path))
+        with open(save_path, 'wb') as f:
+            f.write(bytes_series)
+    else:
+        return bytes_series
+
+
+
+def save_graph_compressed_bounding(graph, save_path="", size=None, branch_recorder=None):
+    """
+对素描图以图的形式进行编码，对坐标的编码利用分支的界定先验。码流组成为 (bit):
+    [11 bit] 0~10: 图像的宽度W-1（表示0~2047，H同）
+    [11 bit] 11~21: 图像的高度H-1
+    [11 bit] 22~32: x的最小值（表示0~2047，y同）
+    [11 bit] 33~43: y的最小值
+    [ 4 bit] 44~47: X，对x的单个数值编码的比特数（表示0~15，y同）
+    [ 4 bit] 48~51: Y，对y的单个数值编码的比特数
+    [16 bit] 52~77: N，关键点的个数，M=ceil(log2(N))表示实际有效的位数，即对邻接矩阵坐标编码的比特数
+    [ M bit] 78~77+M: C，异或结果在次对角线有值的个数。根据此可以得到交叉点、拐点和端点的个数，记为U,V,W
+    [(U+W)X bit] 78+M~77+M+(U+W)X: 对U个交叉点和W个端点的横坐标x-x_min编码的结果
+    [(U+W)Y bit] 78+M+(U+W)X~77+M+(U+W)X+(U+W)Y: 对N个点的纵坐标y-y_min编码的结果
+    [CM bit] 78+M+(U+W)X+(U+W)Y~77+M+(U+W)X+(U+W)Y+CM: 对C个对角线有值的异或结果的单个坐标编码的结果
+    [2QM bit] 78+M+(U+W)X+(U+W)Y+CM+2QM~77+M+(U+W)X+(U+W)Y+CM+2QM: 对Q个其余异或结果的两个坐标编码的结果
+    [T bit] 对剩余所有V个拐点编码的结果
+    """
+    if size is None:
+        size = np.max(graph['positions'], axis=0)
+    threshold_connection = 0.3
+    positions, connections = graph['positions'].astype('int'), graph['connections'] > threshold_connection
+    N = positions.shape[0]
+    degree = (connections + connections.T).sum(axis=0)
+    flag_cross = degree >= 3
+    flag_corner = degree == 2
+    flag_end = degree == 1
+    assert np.logical_or(flag_cross, flag_end).any(), "No cross points!"
+    y_min, x_min = np.min(positions[np.logical_or(flag_cross, flag_end)], axis=0)
+    y_max, x_max = np.max(positions[np.logical_or(flag_cross, flag_end)], axis=0)
+    y_range, x_range = y_max - y_min + 1, x_max - x_min + 1
+    h, w = size
+    bit_x = int(np.ceil(np.log2(x_range)))  # 为x编码的比特数
+    bit_y = int(np.ceil(np.log2(y_range)))  # 为y编码的比特数
+    x_delta = positions[np.logical_or(flag_cross, flag_end)][:, 1] - x_min
+    y_delta = positions[np.logical_or(flag_cross, flag_end)][:, 0] - y_min
+    connections = np.triu(connections)
+    matrix_standard = np.diag(np.ones((connections.shape[0] - 1,)), 1)  # 只有次对角线有值的基准矩阵
+    connections_xor = np.logical_xor(connections, matrix_standard)  # 对连接关系矩阵与基准矩阵求抑或
+    xor_positions = np.array(np.where(connections_xor)).transpose()  # 异或结果为1的位置
+    sub_diag_flags = (xor_positions[:, 1] - xor_positions[:, 0]) == 1  # 异或结果为1的位置在次对角线的标志
+    C = np.sum(sub_diag_flags)  # 异或结果在次对角线有值的个数
+    sub_diag_pos = xor_positions[sub_diag_flags, 0]  # 异或结果在次对角线的坐标（行数，列数为行数加一）
+    other_pos = xor_positions[~sub_diag_flags, :]  # 异或结果在其他位置的坐标
+    M = int(np.ceil(np.log2(N)))  # 对一个连接关系坐标进行编码需要的比特数
+    # 获取固定部分的01码流
+    bins_W = dec2bin(w-1, 11)
     bins_H = dec2bin(h-1, 11)
     bins_x_min = dec2bin(x_min, 11)
     bins_y_min = dec2bin(y_min, 11)
@@ -2048,6 +2121,81 @@ def save_graph_compressed(graph, save_path="", size=None):
     bins = bins_W + bins_H + bins_x_min + bins_y_min + bins_x_bit + bins_y_bit \
         + bins_N + bins_C + ''.join(bins_x_delta) + ''.join(bins_y_delta) \
         + ''.join(bins_sub_diag_pos) + ''.join(bins_other_pos)
+    # print("total (cross+end): ", len(''.join(bins_x_delta) + ''.join(bins_y_delta)))
+    # print("total (no corner):", len(bins))
+    # 获取拐点的码流（各分支没有依赖关系，因此逐分支编码不丢失一般性）
+    bins_corners = []
+    for branch in branch_recorder.branches:
+        bin_branch = ''
+        start_pos = branch.start_pos
+        end_pos = branch.end_pos
+        mid_pos = branch.mid_pos
+        all_pos = [start_pos] + mid_pos + [end_pos]
+        if len(mid_pos) == 0:
+            continue
+        # 端点所能标记的矩形框范围
+        y_min, y_max = (start_pos[0], end_pos[0]) if start_pos[0] < end_pos[0] else (end_pos[0], start_pos[0])
+        x_min, x_max = (start_pos[1], end_pos[1]) if start_pos[1] < end_pos[1] else (end_pos[1], start_pos[1])
+        # 分支所处矩形框范围
+        ye_min, xe_min = np.array(all_pos).min(axis=0)
+        ye_max, xe_max = np.array(all_pos).max(axis=0)
+        # 矩形框向四个方向扩展的距离
+        d_t, d_b = max(0, y_min - ye_min), max(0, ye_max - y_max)
+        d_l, d_r = max(0, x_min - xe_min), max(0, xe_max - x_max)
+        # 编码：向四个方向扩展距离编码的位数及距离
+        bit_t = int(np.ceil(np.log2(np.ceil(np.log2(y_min + 1)) + 1)))  # 用这么多比特对向上扩展距离的编码位数进行编码
+        if bit_t > 0:
+            bin_t_b = dec2bin(int(np.ceil(np.log2(d_t + 1))), bit_t)  # 向上扩展距离编码位数的码流
+        else:
+            bin_t_b = ''
+        if d_t > 0:
+            bin_t = dec2bin(d_t, int(np.ceil(np.log2(d_t + 1))))[1:]  # 第一位一定是1，不编入码流
+        else:
+            bin_t = '0'
+        bin_branch += bin_t_b + bin_t
+        bit_l = int(np.ceil(np.log2(np.ceil(np.log2(x_min + 1)) + 1)))  # 用这么多比特对向上扩展距离的编码位数进行编码
+        if bit_l > 0:
+            bin_l_b = dec2bin(int(np.ceil(np.log2(d_l + 1))), bit_l)  # 向上扩展距离编码位数的码流
+        else:
+            bin_l_b = ''
+        if d_l > 0:
+            bin_l = dec2bin(d_l, int(np.ceil(np.log2(d_l + 1))))[1:]  # 第一位一定是1，不编入码流
+        else:
+            bin_l = '0'
+        bin_branch += bin_l_b + bin_l
+        bit_b = int(np.ceil(np.log2(np.ceil(np.log2(h - y_max)) + 1)))  # 用这么多比特对向上扩展距离的编码位数进行编码
+        if bit_b > 0:
+            bin_b_b = dec2bin(int(np.ceil(np.log2(d_b + 1))), bit_b)  # 向上扩展距离编码位数的码流
+        else:
+            bin_b_b = ''
+        if d_b > 0:
+            bin_b = dec2bin(d_b, int(np.ceil(np.log2(d_b + 1))))[1:]  # 第一位一定是1，不编入码流
+        else:
+            bin_b = '0'
+        bin_branch += bin_b_b + bin_b
+        bit_r = int(np.ceil(np.log2(np.ceil(np.log2(w - x_max)) + 1)))  # 用这么多比特对向上扩展距离的编码位数进行编码
+        if bit_r > 0:
+            bin_r_b = dec2bin(int(np.ceil(np.log2(d_r + 1))), bit_r)  # 向上扩展距离编码位数的码流
+        else:
+            bin_r_b = ''
+        if d_r > 0:
+            bin_r = dec2bin(d_r, int(np.ceil(np.log2(d_r + 1))))[1:]  # 第一位一定是1，不编入码流
+        else:
+            bin_r = '0'
+        bin_branch += bin_r_b + bin_r
+        # 编码：中间点的坐标
+        bit_x = int(np.ceil(np.log2(xe_max - xe_min + 1)))  # 对 x 编码的比特数
+        bit_y = int(np.ceil(np.log2(ye_max - ye_min + 1)))  # 对 y 编码的比特数
+        x_diffs = [pos[1] - xe_min for pos in mid_pos]
+        y_diffs = [pos[0] - ye_min for pos in mid_pos]
+        x_codes = [dec2bin(item, bit_x) for item in x_diffs]
+        y_codes = [dec2bin(item, bit_y) for item in y_diffs]
+        bin_branch += ''.join(x_codes) + ''.join(y_codes)
+        bins_corners.append(bin_branch)
+        # print(len(bin_branch), len(mid_pos), len(bin_branch) / len(mid_pos))
+    bins += ''.join(bins_corners)
+    # print("Total (corners): ", len(''.join(bins_corners)))
+    # print("Total: ", len(bins))
     bytes_series = bitstring2bytes(bins)
     if save_path != "":
         if not os.path.exists(os.path.dirname(save_path)):

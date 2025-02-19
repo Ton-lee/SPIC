@@ -6,7 +6,7 @@ from tools.base_utils import ssm2boundary, get_mIoU, get_ssm_colored_cityscapes,
 from tools.base_utils import get_semantic_orders
 from tools.sketch_utils import save_branch_compressed, preprocess_ssm
 from tools.sketch_func import get_sketch
-from tools.utils import save_graph_compressed, rearrange_graph
+from tools.utils import save_graph_compressed, rearrange_graph, save_graph_compressed_bounding
 import cv2
 
 
@@ -27,7 +27,8 @@ def test_SSM_compression(ssm: np.ndarray, threshold=2):
                                                                  return_recorder=True,
                                                                  threshold_length=1,
                                                                  valid_shift=[1, 3],
-                                                                 abort_stick=True)
+                                                                 abort_stick=True,
+                                                                 merge_neighbor=True)
     # 以分支抽象的格式保存压缩后的素描图
     save_path = "/home/Users/dqy/Projects/SPIC/temp/compressed_branch.bin"
     save_branch_compressed(branch_object, save_path, [H, W])
@@ -36,7 +37,8 @@ def test_SSM_compression(ssm: np.ndarray, threshold=2):
     save_path = "/home/Users/dqy/Projects/SPIC/temp/compressed_sketch.bin"
     graph = {"positions": points, "connections": connections}
     sketch_graph_rearranged = rearrange_graph(graph)
-    save_graph_compressed(sketch_graph_rearranged, save_path, [H, W])
+    # save_graph_compressed(sketch_graph_rearranged, save_path, [H, W])
+    save_graph_compressed_bounding(sketch_graph_rearranged, save_path, [H, W], branch_recorder=branch_object)
     bpp_sketch = os.path.getsize(save_path) * 8 / H / W
     # 编码区域信息，包括围成区域的分支序号和区域的标签
     assigned_index = branch_object.arrange_branch()  # 为各个分支分配唯一的序号
@@ -55,11 +57,11 @@ def test_SSM_compression(ssm: np.ndarray, threshold=2):
 def main():
     # 读取语义分割图并做标签预处理
     ssm_path = ("/home/Users/dqy/Dataset/Cityscapes/"
-                "gtFine/val/frankfurt/frankfurt_000000_000294_gtFine_labelTrainIds.png")
+                "gtFine/val/munster/munster_000166_000019_gtFine_labelTrainIds.png")
     ssm = imageio.v2.imread(ssm_path)  # (1024x2048)
     ssm[ssm == 255] = 19
     ssm_resample = cv2.resize(ssm, [512, 256], interpolation=cv2.INTER_NEAREST)
-    test_SSM_compression(ssm_resample)
+    test_SSM_compression(ssm_resample, threshold=1)
 
 
 if __name__ == "__main__":

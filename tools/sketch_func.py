@@ -1,15 +1,13 @@
 """functions used for sketch generation with SAR Sketch"""
 import numpy as np
 import cv2
-from typing import List
-from collections import Counter
+from typing import List, Tuple
 from skimage import measure
-from tools.utils import save_graph_compressed, rearrange_graph
+from tools.utils import save_graph_compressed, rearrange_graph, save_graph_compressed_bounding
 from tools.base_utils import ssm2boundary, get_mIoU, get_semantic_orders
 from tools.sketch_utils import split_path, get_line_points, get_degree8, get_degree4, del_stick, find_neighbor
-from tools.sketch_utils import process_clip, preprocess_ssm, get_ssm_colored_cityscapes
-from tools.sketch_utils import find_central_point
-
+from tools.sketch_utils import process_clip, preprocess_ssm
+from tools.sketch_utils import find_central_point, find_nearby_pairs, find_nearby_pairs_naive
 
 
 class BranchMap:
@@ -48,9 +46,10 @@ class Branch:
 
     def __init__(self, pos=None, threshold=1):
         if pos is None:
+            pos: List[int]
             pos = [0, 0]
-        self.start_pos = pos  # 起点
-        self.end_pos = []  # 终点
+        self.start_pos: List[int] = pos  # 起点
+        self.end_pos: List[int] = [-1, -1]  # 终点
         self.mid_pos = []  # 中间节点，不包含起点和终点
         self.path = [pos]  # 途径的像素点位置，包含起点和终点
         self.section_mark = [1]  # 标注途径像素点所属的section序号，从1开始。中间节点的序号从属上一节
@@ -60,10 +59,14 @@ class Branch:
         self.max_distance = 0  # distance的最大值
         self.threshold = threshold
         if pos.__class__ == list and pos[0].__class__ == list:
+            pos: List[list]
             if len(pos[0]) == 2:  # 初始化参数是坐标列表，直接对其进行生成
                 self.buildup(pos)
                 # 如果该分支为环，且中间点数小于 2，则重新安排中间点，以保持环结构的有效性
                 self.process_loop()
+
+    def __len__(self):
+        return len(self.path)
 
     def grow(self, path, distances, max_distance):
         """
@@ -127,12 +130,17 @@ class BranchRecorder:
     def __init__(self):
         self.branches: List[Branch] = []
         self.count = 0
+        self.key_nodes: List[Tuple[int, int]] = []  # 记录所有分支的端点
 
     def add_branch(self, branch: Branch):
         """
     新增一个分支
         """
         self.branches.append(branch)
+        if tuple(branch.start_pos) not in self.key_nodes:
+            self.key_nodes.append((branch.start_pos[0], branch.start_pos[1]))
+        if tuple(branch.end_pos) not in self.key_nodes:
+            self.key_nodes.append((branch.end_pos[0], branch.end_pos[1]))
         self.count += 1
 
     def arrange_branch(self):
@@ -190,8 +198,8 @@ class BranchRecorder:
 
                 start_node, end_node = node_pos[section_index], node_pos[section_index + 1]
                 length = max(abs(start_node[0] - end_node[0]), abs(start_node[1] - end_node[1])) + 1
-                fill_line = np.round(np.linspace(start_node[0], end_node[0], length))
-                fill_column = np.round(np.linspace(start_node[1], end_node[1], length))
+                fill_line: np.ndarray = np.array(np.round(np.linspace(start_node[0], end_node[0], length)))
+                fill_column: np.ndarray = np.array(np.round(np.linspace(start_node[1], end_node[1], length)))
                 for i in range(length):
                     edge_sketch[int(fill_line[i]), int(fill_column[i]), :] = [1, 1, 1]
                 edge_sketch[start_node[0], start_node[1], :] = [0, 1, 0]
@@ -242,12 +250,16 @@ class BranchRecorder:
             while candidate_pixels:  # 当待访问队列不为空
                 # 取出种子点并填充
                 seed_point = candidate_pixels.pop(0)  # 从队列中取出一个点作为种子
+                seed_point: Tuple[int, int]
                 region_points.append(seed_point)  # 记录该点
                 flags_filled[seed_point[0], seed_point[1]] = 1  # 填充种子点
                 # 考察四邻域邻点
                 shifts_l, shifts_c = (-1, 0, 0, 1), (0, -1, 1, 0)
                 for shift_l, shift_c in zip(shifts_l, shifts_c):  # 考察每个邻点的偏移
+                    shift_l: int
+                    shift_c: int
                     neighbor = (seed_point[0] + shift_l, seed_point[1] + shift_c)  # 邻点坐标
+                    neighbor: Tuple[int, int]
                     if neighbor[0] < 0 or neighbor[0] > H - 1 or neighbor[1] < 0 or neighbor[1] > W - 1:
                         continue  # 该邻点位于边界以外
                     if flags_filled[neighbor[0], neighbor[1]] == 0:  # 该点未被访问且不是拟合分支上的点
@@ -256,7 +268,7 @@ class BranchRecorder:
                         else:
                             continue
                     elif branch_map.map[neighbor[0], neighbor[1]] > 0 and \
-                            list(sketch_colored[neighbor[0], neighbor[1]]) == [1, 1, 1]:  # 邻点是分支上的点且为中间点
+                            list(sketch_colored[neighbor[0], neighbor[1], :]) == [1, 1, 1]:  # 邻点是分支上的点且为中间点
                         branch_indexes.append(int(branch_map.map[neighbor[0], neighbor[1]] - 1))  # 记录该邻点所属分支的序号
                     else:  # 其余情况不做处理
                         continue
@@ -305,7 +317,7 @@ class BranchRecorder:
             # 存在分支完全位于边界上
             for branch_id, branch in enumerate(self.branches):
                 if border_map8[branch.start_pos[0], branch.start_pos[1]] \
-                    and border_map8[branch.end_pos[0], branch.end_pos[1]] \
+                        and border_map8[branch.end_pos[0], branch.end_pos[1]] \
                         and all([border_map8[pos[0], pos[1]] for pos in branch.mid_pos]):
                     branch_indexes.append(branch_id)
             branch_indexes = list(set(branch_indexes))  # 保留唯一的序号
@@ -321,13 +333,14 @@ class BranchRecorder:
             IoU_ori = np.sum(region_seed * region_points) / np.sum(region_seed + region_points)
             del_branches = []
             for candidate_branch_id in branch_indexes:  # 考虑每一个分支
-                plotted = self.plot_branch([index for index in branch_indexes if index not in [candidate_branch_id] + del_branches],
+                plotted = self.plot_branch([index for index in branch_indexes if index not in [candidate_branch_id]
+                                            + del_branches],
                                            W, H)
                 # 生成连通图
                 region_map, region_count = measure.label(1 - plotted,
-                              background=0,
-                              connectivity=1,
-                              return_num=True)  # 按四邻域划分连通分支
+                                                         background=0,
+                                                         connectivity=1,
+                                                         return_num=True)  # 按四邻域划分连通分支
                 region_seed = region_map == region_map[seed_point[0], seed_point[1]]
                 IoU = np.sum(region_seed * region_points) / np.sum(region_seed + region_points)
                 if IoU >= IoU_ori:  # 去除分支后 IoU 没有降低，表示可以去除
@@ -341,6 +354,7 @@ class BranchRecorder:
         return SSM_regions
 
     def plot_branch(self, branch_indexes, W, H):
+        """在空画布上绘制指定序号的分支"""
         plotted = np.zeros((H, W), dtype="bool")
         sketch_points = np.zeros([0, 2]).astype('int')
         for plot_branch_id in branch_indexes:
@@ -387,7 +401,7 @@ class BranchRecorder:
             # STEP1: 记录完全位于边界上的分支
             for branch_id, branch in enumerate(self.branches):
                 if border_map8[branch.start_pos[0], branch.start_pos[1]] \
-                    and border_map8[branch.end_pos[0], branch.end_pos[1]] \
+                        and border_map8[branch.end_pos[0], branch.end_pos[1]] \
                         and all([border_map8[pos[0], pos[1]] for pos in branch.mid_pos]):
                     branch_indexes.append(branch_id)
             # STEP2: 从剩余分支中挑选，补足区域缺口
@@ -400,7 +414,7 @@ class BranchRecorder:
                     line_points = get_line_points(fit_points[plot_line_idx], fit_points[plot_line_idx + 1])
                     sketch_points = np.concatenate((sketch_points, line_points), axis=0)
             boundary[sketch_points[:, 0], sketch_points[:, 1]] = 1
-            gap_map = border_map4 * (1- boundary)  # 属于四邻域边界但未被分支覆盖的边界点图
+            gap_map = border_map4 * (1 - boundary)  # 属于四邻域边界但未被分支覆盖的边界点图
             # todo: unfinished
             branch_indexes = list(set(branch_indexes))  # 保留唯一的序号
             # 整合围成该区域的分支序号
@@ -445,9 +459,9 @@ class BranchRecorder:
                                                          return_num=True)  # 按四邻域划分连通分支
                 for region_label in range(1, region_count + 1):
                     if region_label in region_map[0, :] or \
-                        region_label in region_map[-1, :] or \
-                        region_label in region_map[:, 0] or \
-                        region_label in region_map[:, -1]:
+                            region_label in region_map[-1, :] or \
+                            region_label in region_map[:, 0] or \
+                            region_label in region_map[:, -1]:
                         region_map[region_map == region_label] = 0  # 将贴边的区域清除
                 region_label = -1
                 for line in range(max_l - min_l + 1):
@@ -470,8 +484,54 @@ class BranchRecorder:
                 ssm[min_l:max_l + 1, min_c:max_c + 1][fill_mask] = label
         return ssm
 
+    def replace_nodes(self, node_pair, node_new):
+        """将点对替换为新的点"""
+        # 进行两次替换
+        self.replace_node(node_pair[0], node_new)
+        self.replace_node(node_pair[1], node_new)
+        # 修改关键点列表
+        self.key_nodes.pop(self.key_nodes.index(node_pair[0]))
+        self.key_nodes.pop(self.key_nodes.index(node_pair[1]))
+        self.key_nodes.append(node_new)
+        # 删除无效分支
+        remove_idx = []
+        for idx, branch in enumerate(self.branches):
+            if tuple(branch.start_pos) == tuple(branch.end_pos):  # 起止点相同，需要考虑删除某分支
+                if len(branch.mid_pos) == 0:  # 单点分支
+                    remove_idx.append(idx)
+                    continue
+                if len(branch.mid_pos) == 1:  # 很短的折线分支（如最小的直角）
+                    if tuple(branch.start_pos) == tuple(branch.mid_pos[0]):
+                        remove_idx.append(idx)
+                        continue
 
-def process_branch(edge, ignore_length=3, neighbor=4, threshold=1, abort_stick=False):
+        self.branches = [self.branches[idx] for idx in range(self.count) if idx not in remove_idx]
+        # 更新分支数目
+        self.count = len(self.branches)
+
+    def replace_node(self, node_old, node_new):
+        """将点替换为新的点"""
+        for branch in self.branches:
+            if tuple(branch.start_pos) == node_old:
+                # 更新起点
+                branch.start_pos = list(node_new)
+                # 更新路径
+                branch.path.insert(0, list(node_new))
+                branch.distances.insert(0, 0)
+                branch.path_length += 1
+                branch.section_mark.insert(0, 1)
+            if tuple(branch.end_pos) == node_old:
+                # 更新起点
+                branch.end_pos = list(node_new)
+                # 更新路径
+                branch.path.append(list(node_new))
+                branch.distances.append(0)
+                branch.path_length += 1
+                branch.section_mark.append(branch.section_mark[-1])
+
+
+def process_branch(edge, ignore_length=3, neighbor=4, threshold=1, abort_stick=False,
+                   merge_neighbor=False):
     """
     对素描图进行分支抽象。
     1. 计算各个点的4-邻域度
@@ -580,6 +640,20 @@ def process_branch(edge, ignore_length=3, neighbor=4, threshold=1, abort_stick=F
         if len(path) > ignore_length:
             branch_map.set_branch(path)  # 标记该分支的所有点的分支序号，序号自动设置
             branch_recorder.add_branch(Branch(path, threshold))
+    # merge_neighbor: 合并临近的交叉点。合并后：若两交叉点属于同一条分支，则删除该分支；以新点替换原来的两点（一定仍为交叉点）
+    if merge_neighbor:
+        # todo: unfinished
+        while True:
+            nearby_nodes = find_nearby_pairs(branch_recorder.key_nodes, threshold=2)  # 曼哈顿距离不超过2的点对
+            if len(nearby_nodes) == 0:
+                break
+            # 顺次合并近邻点
+            for pair in nearby_nodes:
+                if pair[0] in branch_recorder.key_nodes and pair[1] in branch_recorder.key_nodes:  # 两个点仍然存在而未被合并
+                    # 计算合并后点的坐标
+                    merged_node = (int((pair[0][0] + pair[1][0]) / 2), int((pair[0][1] + pair[1][1]) / 2))
+                    # 替换原始分支
+                    branch_recorder.replace_nodes(pair, merged_node)
     # 由所记录branch恢复素描图
     assert np.sum((visited_map == 0) * (degree <= 2) * (degree > 0)) == 0  # 不存在没有访问过的中间点和端点
     edge_sketch = branch_recorder.generate_sketch(h, w)
@@ -587,7 +661,8 @@ def process_branch(edge, ignore_length=3, neighbor=4, threshold=1, abort_stick=F
 
 
 def get_sketch(edge, neighbor=4, threshold_fit=1, return_base_edge=False, return_recorder=False,
-               threshold_length=3, valid_shift=None, abort_stick=False):
+               threshold_length=3, valid_shift=None, abort_stick=False,
+               merge_neighbor=False):
     """
     对指定单像素边缘图像进行素描图抽象
     :param edge: 单像素二值化边缘，边缘部分为1，其余为0
@@ -598,6 +673,8 @@ def get_sketch(edge, neighbor=4, threshold_fit=1, return_base_edge=False, return
     :param threshold_length: 长度阈值。只保留长度高于阈值的分支
     :param valid_shift: 有效的线条变换列表，含义参考 process_phase
     :param abort_stick: 若为True，则舍弃存在度为 1 的端点的分支
+    :param merge_neighbor: 若为True，则合并临近（距离小于等于2）的交叉点。合并后的点坐标从两个点以及其中点三者中选择使与其相关的连线误差
+    最小的点。
     """
     if valid_shift is None:
         valid_shift = [0, 1, 2, 3]
@@ -606,7 +683,8 @@ def get_sketch(edge, neighbor=4, threshold_fit=1, return_base_edge=False, return
     # 获取素描线和素描分支
     edge_sketch, branch_map, branch_recorder = process_branch(edge_clipped, neighbor=neighbor, threshold=threshold_fit,
                                                               ignore_length=threshold_length,
-                                                              abort_stick=abort_stick)  # 分支抽象
+                                                              abort_stick=abort_stick,
+                                                              merge_neighbor=merge_neighbor)  # 分支抽象
     # 所有分支的节点总数之和（充裕数），其中包含部分重复的分支
     total_knots_original = int(np.sum([b.section_count + 1 for b in branch_recorder.branches]))
     # 先以充裕数初始化节点坐标和连接矩阵数组
@@ -666,7 +744,8 @@ def compress_ssm(ssm: np.ndarray, threshold=2, ignore_label=19, class_count=19, 
                                                                  return_recorder=True,
                                                                  threshold_length=1,
                                                                  valid_shift=[1, 3],
-                                                                 abort_stick=True)
+                                                                 abort_stick=True,
+                                                                 merge_neighbor=False)
     # 以分支抽象的格式保存压缩后的素描图
     # save_path = "/home/Users/dqy/Projects/SPIC/temp/compressed_branch.bin"
     # save_branch_compressed(branch_object, save_path, [H, W])
@@ -674,7 +753,11 @@ def compress_ssm(ssm: np.ndarray, threshold=2, ignore_label=19, class_count=19, 
     # 以图格式保存压缩后的素描图
     graph = {"positions": points, "connections": connections}
     sketch_graph_rearranged = rearrange_graph(graph)
-    bytes_ = save_graph_compressed(sketch_graph_rearranged, "", [H, W])
+    # bytes_ = save_graph_compressed(sketch_graph_rearranged, "", [H, W])
+    try:
+        bytes_ = save_graph_compressed_bounding(sketch_graph_rearranged, "", [H, W], branch_object)
+    except AssertionError:
+        return -1, -1, None
     bpp_sketch = len(bytes_) * 8 / H / W
     # 编码区域信息，包括围成区域的分支序号和区域的标签
     assigned_index = branch_object.arrange_branch()  # 为各个分支分配唯一的序号
