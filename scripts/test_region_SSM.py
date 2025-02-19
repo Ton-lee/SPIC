@@ -37,8 +37,8 @@ def test_SSM_compression(ssm: np.ndarray, threshold=2):
     save_path = "/home/Users/dqy/Projects/SPIC/temp/compressed_sketch.bin"
     graph = {"positions": points, "connections": connections}
     sketch_graph_rearranged = rearrange_graph(graph)
-    # save_graph_compressed(sketch_graph_rearranged, save_path, [H, W])
-    save_graph_compressed_bounding(sketch_graph_rearranged, save_path, [H, W], branch_recorder=branch_object)
+    save_graph_compressed(sketch_graph_rearranged, save_path, [H, W])
+    # save_graph_compressed_bounding(sketch_graph_rearranged, save_path, [H, W], branch_recorder=branch_object)
     bpp_sketch = os.path.getsize(save_path) * 8 / H / W
     # 编码区域信息，包括围成区域的分支序号和区域的标签
     assigned_index = branch_object.arrange_branch()  # 为各个分支分配唯一的序号

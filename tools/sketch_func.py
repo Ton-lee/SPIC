@@ -719,6 +719,7 @@ def get_sketch(edge, neighbor=4, threshold_fit=1, return_base_edge=False, return
                     positions[index_count] = branch.end_pos
                     index_count += 1  # 当前总序号+1
                 connections[pt_index1, pt_index2] = 1
+    connections += connections.T
     if return_recorder:  # 返回分支抽象和重建的边缘图
         return positions[:index_count, :], connections[:index_count, :index_count], branch_recorder, edge_sketch
     if not return_base_edge:
@@ -745,7 +746,7 @@ def compress_ssm(ssm: np.ndarray, threshold=2, ignore_label=19, class_count=19, 
                                                                  threshold_length=1,
                                                                  valid_shift=[1, 3],
                                                                  abort_stick=True,
-                                                                 merge_neighbor=False)
+                                                                 merge_neighbor=True)
     # 以分支抽象的格式保存压缩后的素描图
     # save_path = "/home/Users/dqy/Projects/SPIC/temp/compressed_branch.bin"
     # save_branch_compressed(branch_object, save_path, [H, W])

@@ -1989,7 +1989,7 @@ def rearrange_graph(graph):
         connections[index, :] = 0
         connections[:, index] = 0
     positions = positions[indexes, :]
-    connections = connections_copy[np.array(indexes)[:, None], np.array(indexes)[None, :]]
+    connections = connections_copy[np.array(indexes)[None, :], np.array(indexes)[:, None]]
     graph_rearranged = {'positions': positions, 'connections': connections}
     return graph_rearranged
 
@@ -2083,7 +2083,7 @@ def save_graph_compressed_bounding(graph, save_path="", size=None, branch_record
     threshold_connection = 0.3
     positions, connections = graph['positions'].astype('int'), graph['connections'] > threshold_connection
     N = positions.shape[0]
-    degree = (connections + connections.T).sum(axis=0)
+    degree = connections.sum(axis=0)
     flag_cross = degree >= 3
     flag_corner = degree == 2
     flag_end = degree == 1
