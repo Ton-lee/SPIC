@@ -54,6 +54,7 @@
             <excludedPath path="/data" />
             <excludedPath path="/Result" />
             <excludedPath path="/Result_ADE20k" />
+            <excludedPath path="/.git" />
           </excludedPaths>
         </serverdata>
       </paths>

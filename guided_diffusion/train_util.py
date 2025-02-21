@@ -2,9 +2,9 @@ import copy
 import functools
 import os
 import time
-
+import random
 import cv2
-
+import numpy as np
 import blobfile as bf
 import torch as th
 import torch.distributed as dist
@@ -13,6 +13,7 @@ from torch.optim import AdamW
 import torchvision as tv
 print(f"cuda available = {th.cuda.is_available()}")
 from torch.nn.functional import interpolate
+import torch
 
 # import dist_util, logger
 # from fp16_util import MixedPrecisionTrainer
@@ -86,6 +87,14 @@ class TrainLoop:
         self.weight_decay = weight_decay
         self.lr_anneal_steps = lr_anneal_steps
         self.save_dir = save_dir if save_dir else get_blob_logdir()
+        self.image_save_folder = os.path.join(self.save_dir, "images")
+        self.compressed_save_folder = os.path.join(self.save_dir, "compressed")
+        self.labels_save_folder = os.path.join(self.save_dir, "labels")
+        self.samples_save_folder = os.path.join(self.save_dir, "samples")
+        os.makedirs(self.image_save_folder, exist_ok=True)
+        os.makedirs(self.compressed_save_folder, exist_ok=True)
+        os.makedirs(self.labels_save_folder, exist_ok=True)
+        os.makedirs(self.samples_save_folder, exist_ok=True)
         self.prefix = self.save_dir.strip("/").split("/")[-1]
 
         self.step = 0
@@ -188,11 +197,11 @@ class TrainLoop:
             not self.lr_anneal_steps
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
-            batch, cond = next(self.data)
+            batch, cond_ori = next(self.data)
             if batch is None:
                 self.step += 1
                 continue
-            cond = self.preprocess_input(cond)
+            cond = self.preprocess_input(cond_ori)
             if 'coarse' in cond:
                 cond["compressed"] = cond["coarse"]
             else:
@@ -212,6 +221,19 @@ class TrainLoop:
                         bpg_image_list.append(tensor_image)
                     compressed = th.stack(bpg_image_list)
                     cond['compressed'] = compressed.cuda()
+                elif self.compression_type == 'down':
+                    cond['compressed'] = interpolate(batch, (self.small_size, self.large_size), mode="area") 
+                elif self.compression_type == 'sample':  # 像素点采样
+                    if self.args.random_sample:
+                        sample_ratio = random.randint(0, 30) * 0.0001
+                    elif self.args.sample_level != -1:
+                        sample_ratio = self.args.sample_level * 0.0001
+                    else:
+                        raise AttributeError("Must assign random_sample of sample_level!")
+                    H, W = batch.shape[2:]
+                    sample_count = int(H * W * sample_ratio)
+                    sampled = random_sample_pixels(batch, sample_count)
+                    cond['compressed'] = sampled
                 else:
                     cond['compressed'] = interpolate(batch, (self.small_size, self.large_size), mode="area") 
             self.run_step(batch, cond) 
@@ -219,7 +241,27 @@ class TrainLoop:
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
             if self.step % self.save_interval == 0 and self.step != 0:
+            # if self.step != 0:
                 self.save()
+                # sample_fn = (
+                #     self.diffusion.p_sample_loop
+                # )
+                # logger.log(f"Sampling...")
+                # self.model.eval()
+                # with torch.no_grad():
+                #     sample = sample_fn(
+                #         self.model,
+                #         (self.args.batch_size, 3, batch.shape[2], batch.shape[3]),
+                #         clip_denoised=True,
+                #         model_kwargs=cond,
+                #         progress=True
+                #     )
+                # # sample = batch
+                # compressed_img = cond['compressed']
+                # logger.log(f"Saving images...")
+                # label = (cond_ori['label_ori'].float() / 255.0)
+                # path = cond_ori['path']
+                # self.save_images(batch, compressed_img, sample, label, self.step, path)
                 # Run for a finite amount of time in integration tests.
                 if os.environ.get("DIFFUSION_TRAINING_TEST", "") and self.step > 0:
                     return
@@ -333,6 +375,18 @@ class TrainLoop:
         #     if file not in files_to_keep:
         #         os.remove(os.path.join(self.save_dir, file))
 
+    def save_images(self, image, compressed_img, sample, label, step, path):
+        for j in range(image.shape[0]):
+            save_compressed(((compressed_img[j] + 1.0) / 2.0),
+                            os.path.join(self.compressed_save_folder, f"Step{step:06d}-" + path[j].split('/')[-1].split('.')[0]), self.args)
+            tv.utils.save_image(((image[j] + 1.0) / 2.0),
+                                os.path.join(self.image_save_folder, f"Step{step:06d}-" + path[j].split('/')[-1].split('.')[0] + '.png'))
+            tv.utils.save_image(sample[j],
+                                os.path.join(self.samples_save_folder, f"Step{step:06d}-" + path[j].split('/')[-1].split('.')[0] + '.png'))
+            if self.args.condition != "layout":
+                tv.utils.save_image(label[j] * 255.0 / 35.0,  # 0~18 的标签和 255，保存为以 7 为灰度间隔方便可视化
+                                    os.path.join(self.labels_save_folder, f"Step{step:06d}-" + path[j].split('/')[-1].split('.')[0] + '.png'))
+
     def preprocess_input(self, cond_):#, compressed):
         # move to GPU and change data types
         if self.args.condition in ["ssm", "boundary", "sketch"]:
@@ -426,3 +480,41 @@ def log_loss_dict(diffusion, ts, losses):
         for sub_t, sub_loss in zip(ts.cpu().numpy(), values.detach().cpu().numpy()):
             quartile = int(4 * sub_t / diffusion.num_timesteps)
             logger.logkv_mean(f"{key}_q{quartile}", sub_loss)
+
+
+def random_sample_pixels(images, sample_count):
+    """
+    随机选择 sample_count 个像素点保留原值，其余像素点置为 0
+
+    :param images: 输入的图像批次，形状为 (B, 3, H, W)
+    :param sample_count: 要保留的随机像素点数量
+    :return: 处理后的图像批次
+    """
+    B, _, H, W = images.shape
+    total_pixels = H * W
+    
+    # 对每张图像进行处理
+    processed_images = th.zeros_like(images)
+
+    for b in range(B):
+        # 随机选择 sample_count 个像素点的索引
+        random_indices = np.random.choice(total_pixels, sample_count, replace=False)
+        
+        # 将保留的像素点位置恢复为原值
+        h_indices = random_indices // W  # 计算行索引
+        w_indices = random_indices % W   # 计算列索引
+        
+        # 将原图像的保留像素点赋值给新图像
+        processed_images[b, :, h_indices, w_indices] = images[b, :, h_indices, w_indices]
+
+    return processed_images
+
+
+def save_compressed(compressed, path, args):
+    if args.compression_type == 'down+bpg':
+        tv.utils.save_image(compressed, path + '.png')
+        os.system(
+            f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgenc -c ycbcr -q  {int(args.compression_level)} -o {path}.bpg {path}.png")
+        os.system(f"/home/Users/dqy/myLibs/libbpg-0.9.7/bin/bpgdec -o {path}.png {path}.bpg")
+    else:
+        tv.utils.save_image(compressed, path + '.png')

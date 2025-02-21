@@ -2751,3 +2751,34 @@ def decode_graph_repair(input_):
     # 恢复素描图
     sketch = plot_sketch(graph['positions'], [H, W], connections=graph['connections'])[0]
     return [H, W], graph, sketch[:, :, 0]
+
+
+def analysis_branch_prior(branch_object, assigned_index, ssm_regions, box_labels):
+    """根据区域对应的分支序号信息进行素描图的编码，将各区域的矩形框作为已知信息"""
+    if len(box_labels) == 0:
+        return 0  # 没有矩形框，不需要进行任何处理
+    bit_total = 0
+    processed_branch = []  # 记录处理过的分支序号
+    for region in ssm_regions:
+        bit_box = int(np.ceil(np.log2(len(box_labels))))  # 记录区域对应矩形框
+        branch_idx_list, label = region
+        # 在 recorder 中实际对应的序号和路径，获取矩形框
+        branch_idx_recorder = [assigned_index.index(i) for i in branch_idx_list]
+        pos_region = []
+        for branch_idx in branch_idx_recorder:
+            pos_region += [branch_object.branches[branch_idx].start_pos] + branch_object.branches[branch_idx].mid_pos + [branch_object.branches[branch_idx].end_pos]
+        pos_region = np.array(pos_region)
+        min_l, min_c = np.min(pos_region, axis=0)
+        max_l, max_c = np.max(pos_region, axis=0)
+        bit_l = int(np.ceil(np.log2(max_l - min_l + 1)))
+        bit_c = int(np.ceil(np.log2(max_c - min_c + 1)))
+        # 考察未处理过的分支
+        unprocessed_branch = [branch_idx for branch_idx in branch_idx_list if branch_idx not in processed_branch]
+        processed_branch += unprocessed_branch
+        bit_pos = 0
+        for branch_idx in unprocessed_branch:
+            branch = branch_object.branches[assigned_index.index(branch_idx)]
+            bit_pos += (len(branch.mid_pos) + 2) * (bit_l + bit_c)
+        bit_region = bit_box + bit_pos
+        bit_total += bit_region
+    return bit_total

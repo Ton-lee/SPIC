@@ -133,7 +133,7 @@ def main():
         sample_fn = (
             diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
         )
-        if args.max_iter_time != args.diffusion_steps:
+        if args.max_iter_time != args.diffusion_steps or args.condition != "sample":
             sample = sample_fn(
                 model,
                 (args.batch_size, 3, image.shape[2], image.shape[3]),
@@ -155,7 +155,7 @@ def main():
         gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
 
         all_samples.extend([sample.cpu().numpy() for sample in gathered_samples])
-        if args.compression_type == 'down+bpg':
+        if args.compression_type == 'down+bpg' or args.compression_type == 'down':
             compressed_img = F.interpolate(image, (args.small_size, args.large_size), mode="bilinear")
         for j in range(image.shape[0]):
             save_compressed(((compressed_img[j] + 1.0) / 2.0),
@@ -190,6 +190,34 @@ def gaussian_kernel(kernel_size=3, sigma=1.0):
     two_d_kernel = two_d_kernel / two_d_kernel.sum()
 
     return two_d_kernel
+
+
+def random_sample_pixels(images, sample_count):
+    """
+    随机选择 sample_count 个像素点保留原值，其余像素点置为 0
+
+    :param images: 输入的图像批次，形状为 (B, 3, H, W)
+    :param sample_count: 要保留的随机像素点数量
+    :return: 处理后的图像批次
+    """
+    B, _, H, W = images.shape
+    total_pixels = H * W
+    
+    # 对每张图像进行处理
+    processed_images = torch.zeros_like(images)
+
+    for b in range(B):
+        # 随机选择 sample_count 个像素点的索引
+        random_indices = np.random.choice(total_pixels, sample_count, replace=False)
+        
+        # 将保留的像素点位置恢复为原值
+        h_indices = random_indices // W  # 计算行索引
+        w_indices = random_indices % W   # 计算列索引
+        
+        # 将原图像的保留像素点赋值给新图像
+        processed_images[b, :, h_indices, w_indices] = images[b, :, h_indices, w_indices]
+
+    return processed_images
 
 
 def preprocess_input(image, comp_, num_classes, large_size, small_size, compression_type, compression_level, prefix="", args=None):
@@ -250,9 +278,21 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
                 bpg_image_list.append(tensor_image)
             compressed = th.stack(bpg_image_list)
             cond['compressed'] = (2 * compressed - 1).cuda()
+        elif compression_type == 'down':
+            cond['compressed'] = interpolate(image, (small_size, large_size), mode="area") 
+        elif compression_type == 'sample':  # 像素点采样
+            if args.random_sample:
+                sample_ratio = random.randint(0, 15) * 0.0001
+            elif args.sample_level != -1:
+                sample_ratio = args.sample_level * 0.0001
+            else:
+                raise AttributeError("Must assign random_sample of sample_level!")
+            H, W = h, w
+            sample_count = int(H * W * sample_ratio)
+            sampled = random_sample_pixels(image, sample_count)
+            cond['compressed'] = torch.Tensor(sampled)
         else:
-            cond['compressed'] = F.interpolate(image, (small_size, large_size), mode="area")
-
+            cond['compressed'] = interpolate(image, (small_size, large_size), mode="area") 
     return cond
 
 
@@ -284,6 +324,8 @@ def create_argparser():
         ssm_path="",
         random_eliminate=False,  # 随机对语义区域进行掩蔽
         eliminate_level=0,  # 掩蔽语义区域的等级，仅在 random_eliminate=False 时起效。0表示不掩蔽语义区域
+        random_sample=False,  # 随机对输入图像进行颜色采样
+        sample_level=-1,  # 颜色采样等级，每个等级表示 0.01%，-1 表示不进行采样
     )
     defaults.update(sr_model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

@@ -148,6 +148,8 @@ def get_mIoU(label_gt: np.ndarray, label_pred: np.ndarray, labels=None, ignore_l
         if union == 0:
             continue
         IoU.append(intersection / union)
+    if len(IoU) == 0:
+        return 0.0
     return np.mean(IoU)
 
 
@@ -228,9 +230,9 @@ def neighbored(p1, p2, neighbor=8):
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) <= 1
 
 
-def get_cityscapes_ssm_paths():
+def get_cityscapes_ssm_paths(phase="val"):
     """获取 Cityscapes 数据集 val 子集的所有语义分割图的路径"""
-    root_folder = "/home/Users/dqy/Dataset/Cityscapes/gtFine/val/"
+    root_folder = f"/home/Users/dqy/Dataset/Cityscapes/gtFine/{phase}/"
     # 获取文件夹中所有 labelTrainIds.png 为后缀的文件绝对路径
     all_paths = []
     for root, dirs, files in os.walk(root_folder):
@@ -240,9 +242,9 @@ def get_cityscapes_ssm_paths():
     return all_paths
 
 
-def get_ade20k_ssm_paths():
+def get_ade20k_ssm_paths(phase="val"):
     """获取 ADE20k 数据集 val 子集的所有语义分割图的路径"""
-    root_path = "/home/Users/dqy/Dataset/ADE20K/ADEChallengeData2016/annotations/validation/"
+    root_path = "/home/Users/dqy/Dataset/ADE20K/ADEChallengeData2016/annotations/validation/" if phase == "val" else "/home/Users/dqy/Dataset/ADE20K/ADEChallengeData2016/annotations/training/"
     files = sorted(os.listdir(root_path))
     return [os.path.join(root_path, file) for file in files]
 
@@ -272,13 +274,7 @@ def parse_cityscapes_labels():
     color2label = {}
     for key, val in color2label.items():
         color2label[val] = key
-    cityscapes_semantic_orders = [
-        6, 7, 4, 5,  # 交通灯、交通标志、篱笆和杆等细小物
-        11, 12, 18, 17,  # 行人、骑者、自行车与摩托车等小前景
-        13, 14, 15, 16,  # 汽车、卡车、公交、火车等交通工具前景
-        0, 1, 2, 3, 8, 9,  # 路、墙、建筑等中景
-        10  # 天空，大背景
-    ]  # 遍历类别的顺序，高优先级的顺序倾向于保留区域内的所有像素点，保证区域不收缩（如路灯）
+    cityscapes_semantic_orders = [11, 12, 18, 17, 13, 14, 15, 16, 6, 7, 4, 5, 8, 0, 1, 9, 2, 3, 10]  # 遍历类别的顺序，高优先级的顺序倾向于保留区域内的所有像素点，保证区域不收缩（如路灯）
     return cityscapes_colors_map, color2label, cityscapes_semantic_orders
 
 def parse_ade20k_labels():

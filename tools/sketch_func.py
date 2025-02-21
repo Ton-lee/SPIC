@@ -3,7 +3,8 @@ import numpy as np
 import cv2
 from typing import List, Tuple
 from skimage import measure
-from tools.utils import save_graph_compressed, rearrange_graph, save_graph_compressed_bounding
+import math
+from tools.utils import save_graph_compressed, rearrange_graph, save_graph_compressed_bounding, analysis_branch_prior
 from tools.base_utils import ssm2boundary, get_mIoU, get_semantic_orders
 from tools.sketch_utils import split_path, get_line_points, get_degree8, get_degree4, del_stick, find_neighbor
 from tools.sketch_utils import process_clip, preprocess_ssm
@@ -144,6 +145,8 @@ class BranchRecorder:
         self.count += 1
 
     def arrange_branch(self):
+        if len(self.branches) == 0:
+            return []
         """按照规则为各分支分配可识别、可复现的序号"""
         all_points, index_point_branch = [], []  # 所有分支的拟合点，及拟合点所属分支的序号
         for branch_index, branch in enumerate(self.branches):
@@ -772,3 +775,65 @@ def compress_ssm(ssm: np.ndarray, threshold=2, ignore_label=19, class_count=19, 
     # 计算语义指标
     mIoU = get_mIoU(ssm, ssm_recovered, labels=semantic_priorities, ignore_label=ignore_label)
     return bpp_sketch + bpp_region, mIoU, ssm_recovered
+
+
+def compress_ssm_prior(ssm: np.ndarray, threshold=2, ignore_label=19, class_count=19, semantic_priorities=None, layout_level=19, boundary_level=19, box_labels=None):
+    """调用基本函数对语义分割图进行压缩"""
+    assert box_labels is not None
+    # 根据语义区域面积排列优先级，优先保证小目标的完整性
+    if semantic_priorities is None:
+        semantic_priorities = get_semantic_orders(ssm, ignore_label=ignore_label)
+    H, W = ssm.shape
+    # 只保留满足轮廓等级的语义区域
+    for invalid_label in semantic_priorities[boundary_level:]:
+        ssm[ssm==invalid_label] = ignore_label
+    # 只保留满足 layout 等级的检测框
+    box_labels = [label for label in box_labels if label in semantic_priorities[:boundary_level]]
+    # 预处理语义分割图，使斜连但不连通的像素连通
+    ssm_preprocessed = preprocess_ssm(ssm, semantic_priorities, ignore_label=ignore_label)
+    # 根据语义分割图获取语义边界轮廓
+    boundary = ssm2boundary(ssm_preprocessed, semantic_priorities, ignore_label=ignore_label)
+    # 对语义边界轮廓进行分支抽象并执行直线段拟合。部分分支线对区域划分起到关键作用，因此不能根据分支长度进行舍弃
+    points, connections, branch_object, edge_sketch = get_sketch(boundary,
+                                                                 neighbor=4,
+                                                                 threshold_fit=threshold,
+                                                                 return_recorder=True,
+                                                                 threshold_length=1,
+                                                                 valid_shift=[1, 3],
+                                                                 abort_stick=True,
+                                                                 merge_neighbor=True)
+    # 以分支抽象的格式保存压缩后的素描图
+    # save_path = "/home/Users/dqy/Projects/SPIC/temp/compressed_branch.bin"
+    # save_branch_compressed(branch_object, save_path, [H, W])
+    # bpp_branch = os.path.getsize(save_path) * 8 / H / W
+    # 以图格式保存压缩后的素描图
+    # 原始的素描图编码方法，基于素描点重排和分支界定先验
+    # graph = {"positions": points, "connections": connections}
+    # sketch_graph_rearranged = rearrange_graph(graph)
+    # # bytes_ = save_graph_compressed(sketch_graph_rearranged, "", [H, W])
+    # try:
+    #     bytes_ = save_graph_compressed_bounding(sketch_graph_rearranged, "", [H, W], branch_object)
+    # except AssertionError:
+    #     return -1, -1, None
+    # bpp_sketch = len(bytes_) * 8 / H / W
+    # 编码区域信息，包括围成区域的分支序号和区域的标签
+    assigned_index = branch_object.arrange_branch()  # 为各个分支分配唯一的序号
+    ssm_regions = branch_object.generate_regions_connection(ssm, assigned_index, ignore_label=ignore_label)
+    bpp_region = sum([len(region[0]) * np.ceil(np.log2(branch_object.count)) \
+                      + np.ceil(np.log2(class_count)) for region in ssm_regions]) / H / W
+    # 基于 layout 先验的素描图编码方法，基于矩形框作为先验，并采用分支编码方法而不是图
+    bit_count = analysis_branch_prior(branch_object, assigned_index, ssm_regions, box_labels)
+    bpp_sketch = bit_count / H / W
+    # 恢复语义分割图
+    ssm_recovered = branch_object.recover_ssm(ssm_regions, assigned_index, H, W, ignore_label=ignore_label,
+                                              semantic_orders=semantic_priorities)
+    # ssm_colored = get_ssm_colored_cityscapes(ssm_recovered)  # 为语义分割图填充颜色
+    # 计算语义指标
+    mIoU = get_mIoU(ssm, ssm_recovered, labels=semantic_priorities, ignore_label=ignore_label)
+    # 计算 layout 的数据量
+    valid_label_count = len(box_labels)
+    if layout_level == 0:
+        bpp_layout = (math.ceil(math.log2(19))) / 256 / 512
+    else:
+        bpp_layout = (math.ceil(math.log2(19)) + valid_label_count * (math.ceil(math.log2(layout_level)) + 2 * math.log2(512) + 2 * math.log2(256))) / 256 / 512
+    return bpp_sketch + bpp_region + bpp_layout, mIoU, ssm_recovered
