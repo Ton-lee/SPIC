@@ -2759,6 +2759,13 @@ def analysis_branch_prior(branch_object, assigned_index, ssm_regions, box_labels
         return 0  # 没有矩形框，不需要进行任何处理
     bit_total = 0
     processed_branch = []  # 记录处理过的分支序号
+    encoded_cross_points = []  # 记录编码过的分支端点
+    if len(branch_object.branches) == 0:  # 没有有效的轮廓区域
+        return 0
+    max_mid_count = max([len(branch.mid_pos) for branch in branch_object.branches])  # 最大中间点数
+    bit_max_mid_count = 6  # 假设分支中间点数量不超过 50
+    bit_total += bit_max_mid_count
+    bit_per_length = int(np.ceil(np.log2(max_mid_count + 1)))  # 对分支中间点个数编码需要的比特数
     for region in ssm_regions:
         bit_box = int(np.ceil(np.log2(len(box_labels))))  # 记录区域对应矩形框
         branch_idx_list, label = region
@@ -2777,8 +2784,23 @@ def analysis_branch_prior(branch_object, assigned_index, ssm_regions, box_labels
         processed_branch += unprocessed_branch
         bit_pos = 0
         for branch_idx in unprocessed_branch:
+            # todo: 利用已经编码过的交叉点减少数据量
             branch = branch_object.branches[assigned_index.index(branch_idx)]
-            bit_pos += (len(branch.mid_pos) + 2) * (bit_l + bit_c)
+            start_pos = tuple(branch.start_pos)
+            end_pos = tuple(branch.end_pos)
+            bit_end_flag = 2  # 2 bit 用于编码起点和终点是否已经编码过
+            bit_mid_count = bit_per_length  # 编码中间点的个数
+            # 编码方法一：直接编码所有分支点
+            # bit_pos += (2 + len(branch.mid_pos)) * (bit_l + bit_c)  # 编码中间点
+            # 编码方法二：结合已编码点
+            bit_pos += len(branch.mid_pos) * (bit_l + bit_c)  # 编码中间点
+            for pos in [start_pos, end_pos]:
+                if pos not in encoded_cross_points:
+                    bit_pos += bit_l + bit_c  # 编码对应在已编码点的序号
+                    encoded_cross_points.append(pos)
+                else:
+                    bit_pos += int(np.ceil(np.log2(len(encoded_cross_points))))
+            bit_pos += bit_end_flag + bit_mid_count
         bit_region = bit_box + bit_pos
         bit_total += bit_region
     return bit_total

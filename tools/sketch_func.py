@@ -777,16 +777,54 @@ def compress_ssm(ssm: np.ndarray, threshold=2, ignore_label=19, class_count=19, 
     return bpp_sketch + bpp_region, mIoU, ssm_recovered
 
 
-def compress_ssm_prior(ssm: np.ndarray, threshold=2, ignore_label=19, class_count=19, semantic_priorities=None, layout_level=19, boundary_level=19, box_labels=None):
+def makeup_ssm(ssm, ignore_label, boxes, priorties):
+    """将 boxes 填充到对应的 ssm 等于 ignore_label 的位置"""
+    H, W = ssm.shape
+    # 根据 layout 恢复粗略的语义信息
+    for label in priorties:
+        valid_boxes = boxes[:, 0] == label
+        for rough_box in boxes[valid_boxes, :]:
+            category, x_mid, y_mid, w, h = rough_box
+            x_min = x_mid - w / 2
+            y_min = y_mid - h / 2
+            x_max = x_mid + w / 2
+            y_max = y_mid + h / 2
+            x_min = max(0, int(x_min * W))
+            y_min = max(0, int(y_min * H))
+            x_max = min(W, int(x_max * W))
+            y_max = min(H, int(y_max * H))
+            ssm[y_min:y_max, x_min:x_max] = np.where(ssm[y_min:y_max, x_min:x_max] == ignore_label,
+                                                     category, ssm[y_min:y_max, x_min:x_max])
+
+
+def compress_ssm_prior(ssm: np.ndarray, threshold=2, ignore_label=19, class_count=19, semantic_priorities=None,
+                       layout_level=19, boundary_level=19, boxes=None):
     """调用基本函数对语义分割图进行压缩"""
-    assert box_labels is not None
+    ssm_ori = ssm.copy()
+    assert boxes is not None
+    box_labels = boxes[:, 0].astype("int")
+    valid_boxes = [label in semantic_priorities[:layout_level] for label in box_labels]
+    valid_boxes = boxes[valid_boxes, :]
+    rough_boxes = [label in semantic_priorities[boundary_level:layout_level] for label in box_labels]
+    rough_boxes = boxes[rough_boxes, :]
+    # 计算 layout 的数据量
+    if layout_level == 0:
+        bpp_layout = (math.ceil(math.log2(19))) / 256 / 512
+    else:
+        bpp_layout = ((math.ceil(math.log2(19)) + len(valid_boxes) * (math.ceil(math.log2(layout_level))
+                                                                      + 2 * math.log2(512) + 2 * math.log2(256)))
+                      / 256 / 512)
     # 根据语义区域面积排列优先级，优先保证小目标的完整性
     if semantic_priorities is None:
         semantic_priorities = get_semantic_orders(ssm, ignore_label=ignore_label)
     H, W = ssm.shape
     # 只保留满足轮廓等级的语义区域
     for invalid_label in semantic_priorities[boundary_level:]:
-        ssm[ssm==invalid_label] = ignore_label
+        ssm[ssm == invalid_label] = ignore_label
+    if np.all(ssm == ignore_label):
+        makeup_ssm(ssm, ignore_label, rough_boxes, semantic_priorities)
+        mIoU = get_mIoU(ssm_ori, ssm, labels=semantic_priorities, ignore_label=ignore_label)
+        return bpp_layout, mIoU, ssm
     # 只保留满足 layout 等级的检测框
     box_labels = [label for label in box_labels if label in semantic_priorities[:boundary_level]]
     # 预处理语义分割图，使斜连但不连通的像素连通
@@ -827,13 +865,8 @@ def compress_ssm_prior(ssm: np.ndarray, threshold=2, ignore_label=19, class_coun
     # 恢复语义分割图
     ssm_recovered = branch_object.recover_ssm(ssm_regions, assigned_index, H, W, ignore_label=ignore_label,
                                               semantic_orders=semantic_priorities)
+    makeup_ssm(ssm_recovered, ignore_label, rough_boxes, semantic_priorities)
     # ssm_colored = get_ssm_colored_cityscapes(ssm_recovered)  # 为语义分割图填充颜色
     # 计算语义指标
-    mIoU = get_mIoU(ssm, ssm_recovered, labels=semantic_priorities, ignore_label=ignore_label)
-    # 计算 layout 的数据量
-    valid_label_count = len(box_labels)
-    if layout_level == 0:
-        bpp_layout = (math.ceil(math.log2(19))) / 256 / 512
-    else:
-        bpp_layout = (math.ceil(math.log2(19)) + valid_label_count * (math.ceil(math.log2(layout_level)) + 2 * math.log2(512) + 2 * math.log2(256))) / 256 / 512
+    mIoU = get_mIoU(ssm_ori, ssm_recovered, labels=semantic_priorities, ignore_label=ignore_label)
     return bpp_sketch + bpp_region + bpp_layout, mIoU, ssm_recovered
