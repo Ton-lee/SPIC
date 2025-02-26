@@ -117,18 +117,25 @@ def process_factor(factor, files, test_total, test_size, ignore_label, class_cou
     file_exists = os.path.exists(sample_save_path)
     if not file_exists:
         # 如果文件不存在，先创建文件并写入表头
-        df.to_excel(sample_save_path, index=False, header=True, engine='openpyxl', sheet_name=test_phase)
+        df.to_excel(sample_save_path, index=False, header=True, engine='openpyxl',
+                    sheet_name=f"{test_phase}#th{factor:.1f}")
     else:
         # 如果文件已存在，追加数据
-        df_old = pd.read_excel(sample_save_path, sheet_name=test_phase)
-        df_all = pd.concat([df_old, df], ignore_index=True)
+        try:
+            df_old = pd.read_excel(sample_save_path, sheet_name=f"{test_phase}#th{factor:.1f}")
+            df_all = pd.concat([df_old, df], ignore_index=True)
+        except ValueError:
+            df_all = df
         with pd.ExcelWriter(sample_save_path, engine='openpyxl', mode='a', if_sheet_exists='overlay') as writer:
-            df_all.to_excel(writer, index=False, header=True, sheet_name=test_phase)
+            df_all.to_excel(writer, index=False, header=True, sheet_name=f"{test_phase}#th{factor:.1f}")
     tqdm.tqdm.write(f"Region\t{factor}\t\t{layout_level}\t\t{boundary_level}\t\t{avg_bpp:.4f}\t\t{avg_mIoU:.4f}")
 
 
 # Main loop to process all factors
 for factor in test_factor:
+    if factor == 1.0: continue
     for layout_level in range(0, 20):
+        if factor == 1.5 and layout_level <= 15: continue
         for boundary_level in range(0, layout_level + 1):
+            if factor == 1.5 and layout_level == 16 and boundary_level <= 4: continue
             process_factor(factor, files, test_total, test_size, ignore_label, class_count, save_root, layout_level, boundary_level)
