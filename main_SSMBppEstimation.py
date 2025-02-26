@@ -2,8 +2,8 @@ import torch
 import torch.optim as optim
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from models.networks import build_image_bpp_model
-from dataset import ImageBppDataset
+from models.networks import build_ssm_bpp_model
+from dataset import SSMBppDataset
 import os
 import argparse
 import pandas as pd
@@ -16,14 +16,20 @@ def train(model, train_loader, optimizer, criterion, device):
     running_loss = 0.0
 
     # 使用 tqdm 显示训练过程的进度条
-    for images, qps, bpps, _ in tqdm(train_loader, desc="Training", unit="batch"):
-        images, qps, bpps = images.to(device), qps.to(device), bpps.to(device)
-
+    for images, ssms, layout_levels, boundary_levels, fit_thresholds, bpps, _ in tqdm(train_loader,
+                                                                                      desc="Training", unit="batch"):
+        images, ssms, layout_levels, boundary_levels, fit_thresholds, bpps = (images.to(device),
+                                                                              ssms.to(device),
+                                                                              layout_levels.to(device),
+                                                                              boundary_levels.to(device),
+                                                                              fit_thresholds.to(device),
+                                                                              bpps.to(device)
+                                                                              )
         # 梯度清零
         optimizer.zero_grad()
 
         # 前向传播
-        outputs = model(images, qps)  # 假设模型输出为 bpp 的估计值
+        outputs = model(images, ssms, layout_levels, boundary_levels, fit_thresholds)  # 假设模型输出为 bpp 的估计值
 
         # 计算损失
         loss = criterion(outputs.squeeze(), bpps)  # MSE损失，输出是bpp的估计值，bpp是目标值
@@ -48,11 +54,17 @@ def validate(model, val_loader, criterion, device, print_file=None):
 
     # 使用 tqdm 显示验证过程的进度条
     with torch.no_grad():  # 不计算梯度
-        for images, qps, bpps, names in tqdm(val_loader, desc="Validation", unit="batch"):
-            images, qps, bpps = images.to(device), qps.to(device), bpps.to(device)
+        for images, ssms, layout_levels, boundary_levels, fit_thresholds, bpps, names in tqdm(val_loader, desc="Validation", unit="batch"):
+            images, ssms, layout_levels, boundary_levels, fit_thresholds, bpps = (images.to(device),
+                                                                                  ssms.to(device),
+                                                                                  layout_levels.to(device),
+                                                                                  boundary_levels.to(device),
+                                                                                  fit_thresholds.to(device),
+                                                                                  bpps.to(device)
+                                                                                  )
 
             # 前向传播
-            outputs = model(images, qps)  # 假设模型输出为 bpp 的估计值
+            outputs = model(images, ssms, layout_levels, boundary_levels, fit_thresholds)  # 假设模型输出为 bpp 的估计值
 
             # 计算损失
             loss = criterion(outputs.squeeze(), bpps)
@@ -62,7 +74,9 @@ def validate(model, val_loader, criterion, device, print_file=None):
             for i in range(len(images)):
                 predictions.append({
                     'name': names[i],
-                    'QP': qps[i].item(),
+                    'layout_level': layout_levels[i].item(),
+                    'boundary_level': boundary_levels[i].item(),
+                    'fit_threshold': fit_thresholds[i].item(),
                     'bpp_gt': bpps[i].item(),
                     'bpp_pred': outputs[i].item()
                 })
@@ -99,11 +113,12 @@ def main():
 
     # 数据集初始化
     root_dir = "/home/Users/dqy/Dataset/Cityscapes/leftImg8bit_merged(512x256)"
-    excel_file = "/home/Users/dqy/Dataset/Cityscapes/indicators/bpp_image.xlsx"
+    ssm_dir = "/home/Users/dqy/Dataset/Cityscapes/ssm_merged(512x256)"
+    excel_file = "/home/Users/dqy/Dataset/Cityscapes/indicators/bpp_layout+boundary.xlsx"
 
     # 初始化训练和验证数据集
-    train_dataset = ImageBppDataset(root=root_dir, excel_file=excel_file, phase='train')
-    val_dataset = ImageBppDataset(root=root_dir, excel_file=excel_file, phase='val')
+    train_dataset = SSMBppDataset(image_root=root_dir, ssm_root=ssm_dir, excel_file=excel_file, phase='train')
+    val_dataset = SSMBppDataset(image_root=root_dir, ssm_root=ssm_dir, excel_file=excel_file, phase='val')
 
     # 使用 DataLoader 加载数据
     batch_size = 16
@@ -111,7 +126,7 @@ def main():
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=4)
 
     # 初始化模型
-    model = build_image_bpp_model()
+    model = build_ssm_bpp_model()
     model.to(device)  # 将模型移动到 GPU 或 CPU
 
     # 如果指定了预训练模型路径，加载预训练模型

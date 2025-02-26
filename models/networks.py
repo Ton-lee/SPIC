@@ -222,7 +222,7 @@ class ImageBppEstimator(nn.Module):
         self.patches_resolution = img_size  # 图像尺寸
         self.H = img_size[0] // (2 ** self.num_layers)
         self.W = img_size[1] // (2 ** self.num_layers)
-        self.patch_embed = PatchEmbed(img_size, 2, 3, embed_dims[0])
+        self.patch_embed = PatchEmbed(img_size, 2, in_chans, embed_dims[0])
         self.layout_embed = None
         self.hidden_dim = int(self.embed_dims[len(embed_dims)-1] * 1.5)
         self.layer_num = layer_num = 7
@@ -247,7 +247,7 @@ class ImageBppEstimator(nn.Module):
         final_dim = img_size[0] * img_size[1] // (self.num_layers ** 4)
         self.head_list = nn.Linear(embed_dims[-1] * final_dim, 1)  # 输出特征维度为 1
         self.apply(self._init_weights)
-        # Rate adaption
+        # QP adaption
         self.bm_list = nn.ModuleList()
         self.sm_list = nn.ModuleList()
         self.sm_list.append(nn.Linear(self.embed_dims[len(embed_dims) - 1], self.hidden_dim))
@@ -259,19 +259,6 @@ class ImageBppEstimator(nn.Module):
             self.bm_list.append(AdaptiveModulator(self.hidden_dim))
             self.sm_list.append(nn.Linear(self.hidden_dim, outdim))
         self.sigmoid = nn.Sigmoid()
-
-        # SNR adaption
-        self.bm_list1 = nn.ModuleList()
-        self.sm_list1 = nn.ModuleList()
-        self.sm_list1.append(nn.Linear(self.embed_dims[len(embed_dims) - 1], self.hidden_dim))
-        for i in range(layer_num):
-            if i == layer_num - 1:
-                outdim = self.embed_dims[len(embed_dims) - 1]
-            else:
-                outdim = self.hidden_dim
-            self.bm_list1.append(AdaptiveModulator(self.hidden_dim))
-            self.sm_list1.append(nn.Linear(self.hidden_dim, outdim))
-        self.sigmoid1 = nn.Sigmoid()
 
     def forward(self, x, QP):
         B, C, H, W = x.size()
@@ -331,17 +318,194 @@ class ImageBppEstimator(nn.Module):
                                     W // (2 ** (i_layer + 1)))
 
 
-def create_encoder(**kwargs):
+class SSMBppEstimator(nn.Module):
+    def __init__(self, img_size, patch_size, in_chans,
+                 embed_dims, depths, num_heads,
+                 window_size=4, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+                 norm_layer=nn.LayerNorm, patch_norm=True,
+                 bottleneck_dim=16, bias=False):
+        super().__init__()
+        self.bias = bias  # 调制时除了乘积是否也进行偏置
+        self.num_layers = len(depths)  # depths 为每层 SwinTransformer 模块的层数
+        self.patch_norm = patch_norm
+        self.num_features = bottleneck_dim
+        self.mlp_ratio = mlp_ratio
+        self.embed_dims = embed_dims  # 图像块嵌入维度
+        self.in_chans = in_chans  # 输入图像通道数
+        self.patch_size = patch_size  # 图像块尺寸
+        self.patches_resolution = img_size  # 图像尺寸
+        self.H = img_size[0] // (2 ** self.num_layers)
+        self.W = img_size[1] // (2 ** self.num_layers)
+        self.patch_embed = PatchEmbed(img_size, 2, in_chans, embed_dims[0])
+        self.layout_embed = None
+        self.hidden_dim = int(self.embed_dims[len(embed_dims)-1] * 1.5)
+        self.layer_num = layer_num = 7
+
+        # build layers
+        self.layers = nn.ModuleList()
+        for i_layer in range(self.num_layers):
+            layer = BasicLayer(dim=int(embed_dims[i_layer - 1]) if i_layer != 0 else 3,
+                               out_dim=int(embed_dims[i_layer]),
+                               input_resolution=(self.patches_resolution[0] // (2 ** i_layer),
+                                                 self.patches_resolution[1] // (2 ** i_layer)),
+                               depth=depths[i_layer],
+                               num_heads=num_heads[i_layer],
+                               window_size=window_size,
+                               mlp_ratio=self.mlp_ratio,
+                               qkv_bias=qkv_bias, qk_scale=qk_scale,
+                               norm_layer=norm_layer,
+                               downsample=PatchMerging if i_layer != 0 else None)
+            print("Encoder ", layer.extra_repr())
+            self.layers.append(layer)
+        self.norm = norm_layer(embed_dims[-1])
+        final_dim = img_size[0] * img_size[1] // (self.num_layers ** 4)
+        self.head_list = nn.Linear(embed_dims[-1] * final_dim, 1)  # 输出特征维度为 1
+        self.apply(self._init_weights)
+        # layout level adaption
+        self.bm_list = nn.ModuleList()
+        self.sm_list = nn.ModuleList()
+        self.sm_list.append(nn.Linear(self.embed_dims[len(embed_dims) - 1], self.hidden_dim))
+        for i in range(layer_num):
+            if i == layer_num - 1:
+                outdim = self.embed_dims[len(embed_dims) - 1]
+            else:
+                outdim = self.hidden_dim
+            self.bm_list.append(AdaptiveModulator(self.hidden_dim))
+            self.sm_list.append(nn.Linear(self.hidden_dim, outdim))
+        self.sigmoid = nn.Sigmoid()
+
+        # boundary level adaption
+        self.bm_list1 = nn.ModuleList()
+        self.sm_list1 = nn.ModuleList()
+        self.sm_list1.append(nn.Linear(self.embed_dims[len(embed_dims) - 1], self.hidden_dim))
+        for i in range(layer_num):
+            if i == layer_num - 1:
+                outdim = self.embed_dims[len(embed_dims) - 1]
+            else:
+                outdim = self.hidden_dim
+            self.bm_list1.append(AdaptiveModulator(self.hidden_dim))
+            self.sm_list1.append(nn.Linear(self.hidden_dim, outdim))
+        self.sigmoid1 = nn.Sigmoid()
+
+        # fit threshold adaption
+        self.bm_list2 = nn.ModuleList()
+        self.sm_list2 = nn.ModuleList()
+        self.sm_list2.append(nn.Linear(self.embed_dims[len(embed_dims) - 1], self.hidden_dim))
+        for i in range(layer_num):
+            if i == layer_num - 1:
+                outdim = self.embed_dims[len(embed_dims) - 1]
+            else:
+                outdim = self.hidden_dim
+            self.bm_list2.append(AdaptiveModulator(self.hidden_dim))
+            self.sm_list2.append(nn.Linear(self.hidden_dim, outdim))
+        self.sigmoid2 = nn.Sigmoid()
+
+    def forward(self, x, ssm, layout_level, boundary_level, fit_threshold):
+        x = torch.concatenate([x, ssm], dim=1)
+        B, C, H, W = x.size()
+        device = x.get_device()
+        x = self.patch_embed(x)  # (B,HW/2/2, 128)
+        for i_layer, layer in enumerate(self.layers):
+            x = layer(x)
+            # print(x.mean())
+        x = self.norm(x)  # (B, H * W // (self.num_layers ** 4), 320)
+        # layout level 调制
+        layout_level_cuda = torch.tensor(layout_level, dtype=torch.float).to(device)
+        layout_level_batch = layout_level_cuda.unsqueeze(1)
+        for i in range(self.layer_num):
+            # 对于每一个块，原始特征先经过线性层（sm_list[i]）
+            if i == 0:
+                temp = self.sm_list[i](x.detach())
+            else:
+                temp = self.sm_list[i](temp)
+            # QP 过调制层
+            bm = self.bm_list[i](layout_level_batch).unsqueeze(1).expand(-1, H * W // (self.num_layers ** 4), -1)
+            # 线性层输出与调制层输出相乘
+            temp = temp * bm
+        mod_val = self.sigmoid(self.sm_list[-1](temp))
+        x = x * mod_val  # 最后与原始特征相乘实现调制
+        # boundary level 调制
+        boundary_level_cuda = torch.tensor(boundary_level, dtype=torch.float).to(device)
+        boundary_level_batch = boundary_level_cuda.unsqueeze(1)
+        for i in range(self.layer_num):
+            # 对于每一个块，原始特征先经过线性层（sm_list[i]）
+            if i == 0:
+                temp = self.sm_list[i](x.detach())
+            else:
+                temp = self.sm_list[i](temp)
+            # QP 过调制层
+            bm = self.bm_list[i](boundary_level_batch).unsqueeze(1).expand(-1, H * W // (self.num_layers ** 4), -1)
+            # 线性层输出与调制层输出相乘
+            temp = temp * bm
+        mod_val = self.sigmoid(self.sm_list[-1](temp))
+        x = x * mod_val  # 最后与原始特征相乘实现调制
+        # fit threshold 调制
+        fit_threshold_cuda = torch.tensor(fit_threshold, dtype=torch.float).to(device)
+        fit_threshold_batch = fit_threshold_cuda.unsqueeze(1)
+        for i in range(self.layer_num):
+            # 对于每一个块，原始特征先经过线性层（sm_list[i]）
+            if i == 0:
+                temp = self.sm_list[i](x.detach())
+            else:
+                temp = self.sm_list[i](temp)
+            # QP 过调制层
+            bm = self.bm_list[i](fit_threshold_batch).unsqueeze(1).expand(-1, H * W // (self.num_layers ** 4), -1)
+            # 线性层输出与调制层输出相乘
+            temp = temp * bm
+        mod_val = self.sigmoid(self.sm_list[-1](temp))
+        x = x * mod_val  # 最后与原始特征相乘实现调制
+
+        bpp = self.head_list(x.view(B, -1))
+        return bpp
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {'absolute_pos_embed'}
+
+    @torch.jit.ignore
+    def no_weight_decay_keywords(self):
+        return {'relative_position_bias_table'}
+
+    def flops(self):
+        flops = 0
+        flops += self.patch_embed.flops()
+        for i, layer in enumerate(self.layers):
+            flops += layer.flops()
+        flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
+        return flops
+
+    def update_resolution(self, H, W):
+        self.input_resolution = (H, W)
+        for i_layer, layer in enumerate(self.layers):
+            layer.update_resolution(H // (2 ** (i_layer + 1)),
+                                    W // (2 ** (i_layer + 1)))
+
+
+def create_image_encoder(**kwargs):
     model = ImageBppEstimator(**kwargs)
     return model
 
 
-def build_model(params=None, device="cuda:0"):
+def create_ssm_encoder(**kwargs):
+    model = SSMBppEstimator(**kwargs)
+    return model
+
+
+def build_image_bpp_model(params=None, device="cuda:0"):
     if params is None:
-        params = load_default_params(model_size="small")
+        params = load_image_default_params(model_size="small")
     input_image = torch.ones([1, 3, 256, 512]).to(device)
     input_QP = torch.ones([1]).to(device)
-    model = create_encoder(**params)
+    model = create_image_encoder(**params)
     model = model.to(device)
     model(input_image, input_QP)
     num_params = 0
@@ -352,7 +516,23 @@ def build_model(params=None, device="cuda:0"):
     return model
 
 
-def load_default_params(model_size='small'):
+def build_ssm_bpp_model(params=None, device="cuda:0"):
+    if params is None:
+        params = load_ssm_default_params(model_size="small")
+    input_image = torch.ones([1, 3, 256, 512]).to(device)
+    input_QP = torch.ones([1]).to(device)
+    model = create_ssm_encoder(**params)
+    model = model.to(device)
+    model(input_image, input_QP)
+    num_params = 0
+    for param in model.parameters():
+        num_params += param.numel()
+    print("TOTAL Params {}M".format(num_params / 10 ** 6))
+    print("TOTAL FLOPs {}G".format(model.flops() / 10 ** 9))
+    return model
+
+
+def load_image_default_params(model_size='small'):
     image_dims = (3, 256, 512)
     bias = False
     if model_size == 'small':
@@ -372,6 +552,35 @@ def load_default_params(model_size='small'):
     elif model_size =='large':
         model_kwargs = dict(
             img_size=(image_dims[1], image_dims[2]), patch_size=2, in_chans=3,
+            embed_dims=[128, 192, 256, 320], depths=[2, 2, 18, 2], num_heads=[4, 6, 8, 10],
+            window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+            norm_layer=nn.LayerNorm, patch_norm=True, bias=bias
+        )
+    else:
+        raise NotImplementedError(f"Not implemented for this model: {model_size}")
+    return model_kwargs
+
+
+def load_ssm_default_params(model_size='small'):
+    image_dims = (3 + 19, 256, 512)
+    bias = False
+    if model_size == 'small':
+        model_kwargs = dict(
+            img_size=(image_dims[1], image_dims[2]), patch_size=2, in_chans=image_dims[0],
+            embed_dims=[128, 192, 256, 320], depths=[2, 2, 2, 2], num_heads=[4, 6, 8, 10],
+            window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+            norm_layer=nn.LayerNorm, patch_norm=True, bias=bias
+        )
+    elif model_size == 'base':
+        model_kwargs = dict(
+            img_size=(image_dims[1], image_dims[2]), patch_size=2, in_chans=image_dims[0],
+            embed_dims=[128, 192, 256, 320], depths=[2, 2, 6, 2], num_heads=[4, 6, 8, 10],
+            window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+            norm_layer=nn.LayerNorm, patch_norm=True, bias=bias
+        )
+    elif model_size =='large':
+        model_kwargs = dict(
+            img_size=(image_dims[1], image_dims[2]), patch_size=2, in_chans=image_dims[0],
             embed_dims=[128, 192, 256, 320], depths=[2, 2, 18, 2], num_heads=[4, 6, 8, 10],
             window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
             norm_layer=nn.LayerNorm, patch_norm=True, bias=bias
