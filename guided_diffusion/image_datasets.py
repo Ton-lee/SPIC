@@ -334,7 +334,7 @@ class ImageDataset(Dataset):
             arr_class[arr_class == 255] = 19
 
         # arr_class = np.ones_like(arr_class) * 19  # 测试将所有语义标签掩蔽时的性能
-
+        eliminate_semantics = []
         # 对语义分割图，随机进行语义掩蔽
         if self.args.condition == 'ssm':
             if self.args.random_eliminate:
@@ -371,7 +371,11 @@ class ImageDataset(Dataset):
                     eliminate_semantics = self.semantic_priority[-self.args.eliminate_level:]  # 掩蔽不重要的几种语义
                     for idx in eliminate_semantics:
                         arr_class[:, :, idx] = 0
-
+        eliminate_semantics_array = np.ones((self.num_classes,))
+        for idx in eliminate_semantics:
+            eliminate_semantics_array[idx] = 0
+        if self.args.eliminate_channels_assist:
+            out_dict['eliminate_semantics'] = eliminate_semantics_array
         if self.args.condition in ["boundary", "sketch"]:
             arr_class = 1 - (arr_class / 255).astype("int")
         if self.args.condition in ["ssm", "boundary", "sketch"]:  # 图像形式的标签需要添加一个通道

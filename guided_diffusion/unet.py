@@ -80,10 +80,10 @@ class TimestepEmbedSequential(nn.Sequential, TimestepBlock, CondTimestepBlock):
     support it as an extra input.
     """
 
-    def forward(self, x, cond, emb):
+    def forward(self, x, cond, emb, eliminated_channels):
         for layer in self:
             if isinstance(layer, CondTimestepBlock):
-                x = layer(x, cond, emb)
+                x = layer(x, cond, emb, eliminated_channels)
             elif isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
             else:
@@ -165,18 +165,23 @@ class SPADEGroupNorm(nn.Module):
             nn.Conv2d(label_nc, nhidden, kernel_size=3, padding=1),
             nn.ReLU()
         )
+        self.mlp_eliminate = nn.Sequential(
+            nn.Conv2d(label_nc, nhidden, kernel_size=1, padding=0),
+            nn.Sigmoid()
+        )
         self.mlp_gamma = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
         self.mlp_beta = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
 
-    def forward(self, x, segmap):
+    def forward(self, x, segmap, eliminate_channels):
         # Part 1. generate parameter-free normalized activations
         x = self.norm(x)
 
         # Part 2. produce scaling and bias conditioned on semantic map
         segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
         actv = self.mlp_shared(segmap)
-        gamma = self.mlp_gamma(actv)
-        beta = self.mlp_beta(actv)
+        weights = self.mlp_eliminate(eliminate_channels)
+        gamma = self.mlp_gamma(actv * weights)
+        beta = self.mlp_beta(actv * weights)
 
         # apply scale and bias
         return x * (1 + gamma) + beta
@@ -380,7 +385,7 @@ class SDMResBlock(CondTimestepBlock):
         else:
             self.skip_connection = conv_nd(dims, channels, self.out_channels, 1)
 
-    def forward(self, x, cond, emb):
+    def forward(self, x, cond, emb, eliminated_channels):
         """
         Apply the block to a Tensor, conditioned on a timestep embedding.
 
@@ -389,30 +394,30 @@ class SDMResBlock(CondTimestepBlock):
         :return: an [N x C x ...] Tensor of outputs.
         """
         return checkpoint(
-            self._forward, (x, cond, emb), self.parameters(), self.use_checkpoint
+            self._forward, (x, cond, emb, eliminated_channels), self.parameters(), self.use_checkpoint
         )
 
-    def _forward(self, x, cond, emb):
+    def _forward(self, x, cond, emb, eliminated_channels):
         if self.updown:
             in_rest, in_conv = self.in_layers[:-1], self.in_layers[-1]
-            h = self.in_norm(x, cond)
+            h = self.in_norm(x, cond, eliminated_channels)
             h = in_rest(h)
-            h = self.h_upd(h)
-            x = self.x_upd(x)
+            h = self.h_upd(h)  # 简单上下采样，不需要修改
+            x = self.x_upd(x)  # 简单上下采样，不需要修改
             h = in_conv(h)
         else:
-            h = self.in_norm(x, cond)
+            h = self.in_norm(x, cond, eliminated_channels)
             h = self.in_layers(h)
         emb_out = self.emb_layers(emb).type(h.dtype)
         while len(emb_out.shape) < len(h.shape):
             emb_out = emb_out[..., None]
         if self.use_scale_shift_norm:
             scale, shift = th.chunk(emb_out, 2, dim=1)
-            h = self.out_norm(h, cond) * (1 + scale) + shift
+            h = self.out_norm(h, cond, eliminated_channels) * (1 + scale) + shift
             h = self.out_layers(h)
         else:
             h = h + emb_out
-            h = self.out_norm(h, cond)
+            h = self.out_norm(h, cond, eliminated_channels)
             h = self.out_layers(h)
         return self.skip_connection(x) + h
 
@@ -793,13 +798,14 @@ class UNetModel(nn.Module):
         self.middle_block.apply(convert_module_to_f32)
         self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps, y=None):
+    def forward(self, x, timesteps, y=None, eliminate_channels=None):
         """
         Apply the model to an input batch.
 
         :param x: an [N x C x ...] Tensor of inputs.
         :param timesteps: a 1-D batch of timesteps.
         :param y: an [N] Tensor of labels, if class-conditional.
+        :param eliminate_channels: a Tensor of semantic indices to eliminate.
         :return: an [N x C x ...] Tensor of outputs.
         """
         assert (y is not None) == (
@@ -813,14 +819,15 @@ class UNetModel(nn.Module):
             assert y.shape == (x.shape[0], self.num_classes, x.shape[2], x.shape[3])
 
         y = y.type(self.dtype)
+        eliminate_channels = eliminate_channels.type(self.dtype)
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, y, emb)
+            h = module(h, y, emb, eliminate_channels)
             hs.append(h)
-        h = self.middle_block(h, y, emb)
+        h = self.middle_block(h, y, emb, eliminate_channels)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, y, emb)
+            h = module(h, y, emb, eliminate_channels)
         h = h.type(x.dtype)
         return self.out(h)
 

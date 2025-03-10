@@ -152,11 +152,20 @@ class TrainLoop:
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
             if dist.get_rank() == 0:
                 logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-                self.model.load_state_dict(
-                    th.load(
-                        resume_checkpoint, map_location=dist_util.dev()
+                try:
+                    self.model.load_state_dict(
+                        th.load(
+                            resume_checkpoint, map_location=dist_util.dev()
+                        )
                     )
-                )
+                except RuntimeError as e:
+                    print(e)
+                    self.model.load_state_dict(
+                        th.load(
+                            resume_checkpoint, map_location=dist_util.dev()
+                        ), strict=False
+                    )
+                    print("Loading done (not strict)")
 
         dist_util.sync_params(self.model.parameters())
 
@@ -236,7 +245,7 @@ class TrainLoop:
                     cond['compressed'] = sampled
                 else:
                     cond['compressed'] = interpolate(batch, (self.small_size, self.large_size), mode="area") 
-            self.run_step(batch, cond) 
+            self.run_step(batch, cond)
             
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
@@ -394,6 +403,7 @@ class TrainLoop:
 
         # create one-hot label map
         label_map = cond_['label']
+        eliminate_channels_cond = cond_['eliminate_semantics'][:, :, None, None].long()
         bs, _, h, w = label_map.size()
         if self.num_classes == 19:  # 对于 Cityscapes 数据集的语义分割图，由于先天存在忽略区域，因此通道数始终增加 1
             nc = self.num_classes+1
@@ -403,11 +413,12 @@ class TrainLoop:
             nc = self.num_classes
         if self.args.condition in ["ssm", "boundary", "sketch"]:
             input_label = th.FloatTensor(bs, nc, h, w).zero_()
+            eliminate_channels = eliminate_channels_cond.view(bs, nc, 1, 1)
             input_semantics = input_label.scatter_(1, label_map, 1.0)
-
             if self.num_classes == 19:
-                input_semantics = input_semantics[:, :-1, :, :] 
-                
+                input_semantics = input_semantics[:, :-1, :, :]
+                eliminate_channels = eliminate_channels[:, :-1, :, :]
+
             # concatenate instance map if it exists
             if 'instance' in cond_:
                 inst_map = cond_['instance']
@@ -420,9 +431,10 @@ class TrainLoop:
         else:
             assert self.args.condition == "layout"
             input_semantics = label_map
-
+            eliminate_channels = eliminate_channels_cond
         cond = {key: value for key, value in cond_.items() if key not in ['label', 'instance', 'path', 'label_ori']}
         cond['y'] = input_semantics
+        cond['eliminate_channels'] = eliminate_channels
         
         
         return cond
