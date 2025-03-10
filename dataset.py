@@ -81,11 +81,13 @@ class SSMBppDataset(Dataset):
         ])
 
         # 读取Excel文件中的数据
-        self.thresholds = [1.0, 1.5, 2.0, 2.5, 3.0]
+        # self.thresholds = [1.0, 1.5, 2.0, 2.5, 3.0]
+        self.thresholds = [1.0, 1.5]
         self.categories = 19
         self.df = {}
         for threshold in self.thresholds:
-            self.df[threshold] = pd.read_excel(excel_file, sheet_name=f"{phase}#th{threshold:.1f}")  # 读取工作表
+            data = pd.read_excel(excel_file, sheet_name=f"{phase}#th{threshold:.1f}")  # 读取工作表
+            self.df[threshold] = data
 
         # 提取图像名称、QP和bpp列
         self.image_names = {}
@@ -120,9 +122,10 @@ class SSMBppDataset(Dataset):
         boundary_level = self.boundary_levels[threshold][idx]
         bpp_value = self.bpp_values[threshold][idx]
         # 读取图像
-        image_path = os.path.join(self.image_root, self.phase, f"{image_name}.png")
+        image_path = os.path.join(self.image_root, self.phase,
+                                  image_name.replace("gtFine_labelTrainIds", "leftImg8bit"))
         image = Image.open(image_path).convert('RGB')
-        ssm_path = os.path.join(self.ssm_root, self.phase, f"{image_name}.png")
+        ssm_path = os.path.join(self.ssm_root, self.phase, image_name)
         ssm = Image.open(ssm_path).convert('L')
         # 对 ssm 进行 one-hot 映射
         ssm_array = np.array(ssm)  # 转换为 numpy 数组
@@ -147,12 +150,11 @@ class SSMBppDataset(Dataset):
         # 返回图像，QP和bpp
         return (image,
                 one_hot_ssm,
-                torch.tensor(layout_level, dtype=torch.int),
-                torch.tensor(boundary_level, dtype=torch.int),
+                torch.tensor(layout_level, dtype=torch.float),
+                torch.tensor(boundary_level, dtype=torch.float),
                 torch.tensor(threshold, dtype=torch.float),
                 torch.tensor(bpp_value, dtype=torch.float),
                 image_name)
-
 
 
 def test_image_bpp_estimation():

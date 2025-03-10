@@ -410,8 +410,7 @@ class SSMBppEstimator(nn.Module):
             # print(x.mean())
         x = self.norm(x)  # (B, H * W // (self.num_layers ** 4), 320)
         # layout level 调制
-        layout_level_cuda = torch.tensor(layout_level, dtype=torch.float).to(device)
-        layout_level_batch = layout_level_cuda.unsqueeze(1)
+        layout_level_batch = layout_level.unsqueeze(1)
         for i in range(self.layer_num):
             # 对于每一个块，原始特征先经过线性层（sm_list[i]）
             if i == 0:
@@ -425,34 +424,32 @@ class SSMBppEstimator(nn.Module):
         mod_val = self.sigmoid(self.sm_list[-1](temp))
         x = x * mod_val  # 最后与原始特征相乘实现调制
         # boundary level 调制
-        boundary_level_cuda = torch.tensor(boundary_level, dtype=torch.float).to(device)
-        boundary_level_batch = boundary_level_cuda.unsqueeze(1)
+        boundary_level_batch = boundary_level.unsqueeze(1)
         for i in range(self.layer_num):
             # 对于每一个块，原始特征先经过线性层（sm_list[i]）
             if i == 0:
-                temp = self.sm_list[i](x.detach())
+                temp = self.sm_list1[i](x.detach())
             else:
-                temp = self.sm_list[i](temp)
+                temp = self.sm_list1[i](temp)
             # QP 过调制层
-            bm = self.bm_list[i](boundary_level_batch).unsqueeze(1).expand(-1, H * W // (self.num_layers ** 4), -1)
+            bm = self.bm_list1[i](boundary_level_batch).unsqueeze(1).expand(-1, H * W // (self.num_layers ** 4), -1)
             # 线性层输出与调制层输出相乘
             temp = temp * bm
-        mod_val = self.sigmoid(self.sm_list[-1](temp))
+        mod_val = self.sigmoid(self.sm_list1[-1](temp))
         x = x * mod_val  # 最后与原始特征相乘实现调制
         # fit threshold 调制
-        fit_threshold_cuda = torch.tensor(fit_threshold, dtype=torch.float).to(device)
-        fit_threshold_batch = fit_threshold_cuda.unsqueeze(1)
+        fit_threshold_batch = fit_threshold.unsqueeze(1)
         for i in range(self.layer_num):
             # 对于每一个块，原始特征先经过线性层（sm_list[i]）
             if i == 0:
-                temp = self.sm_list[i](x.detach())
+                temp = self.sm_list2[i](x.detach())
             else:
-                temp = self.sm_list[i](temp)
+                temp = self.sm_list2[i](temp)
             # QP 过调制层
-            bm = self.bm_list[i](fit_threshold_batch).unsqueeze(1).expand(-1, H * W // (self.num_layers ** 4), -1)
+            bm = self.bm_list2[i](fit_threshold_batch).unsqueeze(1).expand(-1, H * W // (self.num_layers ** 4), -1)
             # 线性层输出与调制层输出相乘
             temp = temp * bm
-        mod_val = self.sigmoid(self.sm_list[-1](temp))
+        mod_val = self.sigmoid(self.sm_list2[-1](temp))
         x = x * mod_val  # 最后与原始特征相乘实现调制
 
         bpp = self.head_list(x.view(B, -1))
@@ -520,10 +517,11 @@ def build_ssm_bpp_model(params=None, device="cuda:0"):
     if params is None:
         params = load_ssm_default_params(model_size="small")
     input_image = torch.ones([1, 3, 256, 512]).to(device)
+    input_ssm = torch.ones([1, 19, 256, 512]).to(device)
     input_QP = torch.ones([1]).to(device)
     model = create_ssm_encoder(**params)
     model = model.to(device)
-    model(input_image, input_QP)
+    model(input_image, input_ssm, input_QP, input_QP, input_QP)
     num_params = 0
     for param in model.parameters():
         num_params += param.numel()
@@ -567,7 +565,7 @@ def load_ssm_default_params(model_size='small'):
     if model_size == 'small':
         model_kwargs = dict(
             img_size=(image_dims[1], image_dims[2]), patch_size=2, in_chans=image_dims[0],
-            embed_dims=[128, 192, 256, 320], depths=[2, 2, 2, 2], num_heads=[4, 6, 8, 10],
+            embed_dims=[128, 192, 256, 320], depths=[1, 1, 1, 1], num_heads=[4, 6, 8, 10],
             window_size=8, mlp_ratio=4., qkv_bias=True, qk_scale=None,
             norm_layer=nn.LayerNorm, patch_norm=True, bias=bias
         )

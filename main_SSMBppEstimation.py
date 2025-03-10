@@ -11,11 +11,12 @@ from tqdm import tqdm
 
 
 # 训练函数
-def train(model, train_loader, optimizer, criterion, device):
+def train(model, train_loader, optimizer, criterion, device, checkpoint_dir, epoch):
     model.train()  # 设置模型为训练模式
     running_loss = 0.0
 
     # 使用 tqdm 显示训练过程的进度条
+    step = 0
     for images, ssms, layout_levels, boundary_levels, fit_thresholds, bpps, _ in tqdm(train_loader,
                                                                                       desc="Training", unit="batch"):
         images, ssms, layout_levels, boundary_levels, fit_thresholds, bpps = (images.to(device),
@@ -41,8 +42,16 @@ def train(model, train_loader, optimizer, criterion, device):
         # 更新优化器
         optimizer.step()
 
+        # 及时打印训练信息
+        step += 1
+        if step % 1000 == 0:
+            print(f"Step {step}: Loss: {loss.item():.6f}")
+        if step % 10000 == 0:
+            # 由于一个 epoch 步数过多，因此及时保存模型参数
+            torch.save(model.state_dict(), os.path.join(checkpoint_dir, f"SSMBpp_EP{epoch}#STEP{step:07d}.pth"))
+
     epoch_loss = running_loss / len(train_loader)
-    print(f"Train Loss: {epoch_loss:.4f}")
+    print(f"Train Loss: {epoch_loss:.6f}")
     return epoch_loss
 
 
@@ -82,7 +91,7 @@ def validate(model, val_loader, criterion, device, print_file=None):
                 })
 
     epoch_loss = running_loss / len(val_loader)
-    print(f"Validation Loss: {epoch_loss:.4f}")
+    print(f"Validation Loss: {epoch_loss:.6f}")
 
     # 如果指定了输出文件路径，保存预测结果
     if print_file:
@@ -114,16 +123,16 @@ def main():
     # 数据集初始化
     root_dir = "/home/Users/dqy/Dataset/Cityscapes/leftImg8bit_merged(512x256)"
     ssm_dir = "/home/Users/dqy/Dataset/Cityscapes/ssm_merged(512x256)"
-    excel_file = "/home/Users/dqy/Dataset/Cityscapes/indicators/bpp_layout+boundary.xlsx"
+    excel_file = "/home/Users/dqy/Dataset/Cityscapes/indicators/bpp_layout+boundary_stable.xlsx"
 
-    # 初始化训练和验证数据集
-    train_dataset = SSMBppDataset(image_root=root_dir, ssm_root=ssm_dir, excel_file=excel_file, phase='train')
-    val_dataset = SSMBppDataset(image_root=root_dir, ssm_root=ssm_dir, excel_file=excel_file, phase='val')
-
-    # 使用 DataLoader 加载数据
+    # 初始化训练和验证数据集，并使用 DataLoader 加载数据
     batch_size = 16
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=4)
+    if args.phase in ['train', 'train+val']:
+        train_dataset = SSMBppDataset(image_root=root_dir, ssm_root=ssm_dir, excel_file=excel_file, phase='train')
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=16)
+    if args.phase in ['val', 'train+val']:
+        val_dataset = SSMBppDataset(image_root=root_dir, ssm_root=ssm_dir, excel_file=excel_file, phase='val')
+        val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False, num_workers=4)
 
     # 初始化模型
     model = build_ssm_bpp_model()
@@ -164,9 +173,9 @@ def main():
         # 训练模型
         if args.phase in ['train', 'train+val']:
             print(f"\nEpoch {epoch + 1}/{epochs}")
-            train_loss = train(model, train_loader, optimizer, criterion, device)
+            train_loss = train(model, train_loader, optimizer, criterion, device, checkpoint_dir, epoch)
             # 保存当前epoch模型
-            model_save_path = os.path.join(checkpoint_dir, f"ImageBpp_EP{epoch + 1}.pth")
+            model_save_path = os.path.join(checkpoint_dir, f"SSMBpp_EP{epoch + 1}.pth")
             torch.save(model.state_dict(), model_save_path)
             print(f"Model saved to {model_save_path}")
 
@@ -177,12 +186,12 @@ def main():
         # 保存最佳模型（根据验证损失）
         if args.phase in ['train+val'] and val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_model_path = os.path.join(checkpoint_dir, "best_model.pth")
+            best_model_path = os.path.join(checkpoint_dir, "SSMBPP_best_model.pth")
             torch.save(model.state_dict(), best_model_path)
             print(f"Best model saved to {best_model_path}")
 
         if args.phase in ['train+val']:
-            print(f"Best Validation Loss: {best_val_loss:.4f}")
+            print(f"Best Validation Loss: {best_val_loss:.6f}")
 
         if args.phase in ["val"]:
             break
