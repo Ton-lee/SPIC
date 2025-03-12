@@ -179,10 +179,13 @@ class SPADEGroupNorm(nn.Module):
         # Part 2. produce scaling and bias conditioned on semantic map
         segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
         actv = self.mlp_shared(segmap)
-        weights = self.mlp_eliminate(eliminate_channels)
-        gamma = self.mlp_gamma(actv * weights)
-        beta = self.mlp_beta(actv * weights)
-
+        if eliminate_channels is not None:
+            weights = self.mlp_eliminate(eliminate_channels)
+            gamma = self.mlp_gamma(actv * weights)
+            beta = self.mlp_beta(actv * weights)
+        else:
+            gamma = self.mlp_gamma(actv)
+            beta = self.mlp_beta(actv)
         # apply scale and bias
         return x * (1 + gamma) + beta
 
@@ -819,7 +822,8 @@ class UNetModel(nn.Module):
             assert y.shape == (x.shape[0], self.num_classes, x.shape[2], x.shape[3])
 
         y = y.type(self.dtype)
-        eliminate_channels = eliminate_channels.type(self.dtype)
+        if eliminate_channels is not None:
+            eliminate_channels = eliminate_channels.type(self.dtype)
         h = x.type(self.dtype)
         for module in self.input_blocks:
             h = module(h, y, emb, eliminate_channels)

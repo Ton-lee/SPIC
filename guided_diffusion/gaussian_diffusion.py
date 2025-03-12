@@ -262,17 +262,25 @@ class GaussianDiffusion:
         B, C = x.shape[:2]
         assert t.shape == (B,)
         if 'y' in model_kwargs:
-            model_output = model(x, self._scale_timesteps(t), cond=model_kwargs['y'],
-                                 low_res=model_kwargs['compressed'],
-                                 eliminate_channels=model_kwargs['eliminate_channels'])
+            if 'eliminate_channels' in model_kwargs:
+                model_output = model(x, self._scale_timesteps(t), cond=model_kwargs['y'],
+                                     low_res=model_kwargs['compressed'],
+                                     eliminate_channels=model_kwargs['eliminate_channels'])
+            else:
+                model_output = model(x, self._scale_timesteps(t), cond=model_kwargs['y'],
+                                     low_res=model_kwargs['compressed'])
             # print(x.norm()/model_output.norm())
         else:
             model_output = model(x, self._scale_timesteps(t), **model_kwargs)
 
         if 's' in model_kwargs and model_kwargs['s'] > 1.0:
-            model_output_zero = model(x, self._scale_timesteps(t), cond=th.zeros_like(model_kwargs['y']),
-                                      low_res=model_kwargs['compressed'],
-                                      eliminate_channels=model_kwargs['eliminate_channels'])
+            if 'eliminate_channels' in model_kwargs:
+                model_output_zero = model(x, self._scale_timesteps(t), cond=th.zeros_like(model_kwargs['y']),
+                                          low_res=model_kwargs['compressed'],
+                                          eliminate_channels=model_kwargs['eliminate_channels'])
+            else:
+                model_output_zero = model(x, self._scale_timesteps(t), cond=th.zeros_like(model_kwargs['y']),
+                                          low_res=model_kwargs['compressed'])
             model_output[:, :3] = model_output_zero[:, :3] + model_kwargs['s'] * (model_output[:, :3] - model_output_zero[:, :3])
 
         if self.model_var_type in [ModelVarType.LEARNED, ModelVarType.LEARNED_RANGE]:
@@ -799,10 +807,13 @@ class GaussianDiffusion:
             if self.loss_type == LossType.RESCALED_KL:
                 terms["loss"] *= self.num_timesteps
         elif self.loss_type == LossType.MSE or self.loss_type == LossType.RESCALED_MSE:
-            model_output = model(x_t, self._scale_timesteps(t), cond=model_kwargs['y'],
-                                 low_res=model_kwargs['compressed'],
-                                 eliminate_channels=model_kwargs['eliminate_channels'])
-
+            if 'eliminate_channels' in model_kwargs:
+                model_output = model(x_t, self._scale_timesteps(t), cond=model_kwargs['y'],
+                                     low_res=model_kwargs['compressed'],
+                                     eliminate_channels=model_kwargs['eliminate_channels'])
+            else:
+                model_output = model(x_t, self._scale_timesteps(t), cond=model_kwargs['y'],
+                                     low_res=model_kwargs['compressed'])
             if self.model_var_type in [
                 ModelVarType.LEARNED,
                 ModelVarType.LEARNED_RANGE,
