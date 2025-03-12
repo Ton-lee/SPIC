@@ -403,7 +403,10 @@ class TrainLoop:
 
         # create one-hot label map
         label_map = cond_['label']
-        eliminate_channels_cond = cond_['eliminate_semantics'][:, :, None, None].long()
+        if 'eliminate_semantics' in cond_:
+            eliminate_channels_cond = cond_['eliminate_semantics'][:, :, None, None].long()
+        else:
+            eliminate_channels_cond = None
         bs, _, h, w = label_map.size()
         if self.num_classes == 19:  # 对于 Cityscapes 数据集的语义分割图，由于先天存在忽略区域，因此通道数始终增加 1
             nc = self.num_classes+1
@@ -411,13 +414,17 @@ class TrainLoop:
             nc = self.num_classes + 1
         else:
             nc = self.num_classes
-        if self.args.condition in ["ssm", "boundary", "sketch"]:
+        if self.args.condition in ["ssm", "boundary", "sketch"]:  # 需要 one-hot 映射
             input_label = th.FloatTensor(bs, nc, h, w).zero_()
-            eliminate_channels = eliminate_channels_cond.view(bs, nc, 1, 1)
+            if eliminate_channels_cond is not None:
+                eliminate_channels = eliminate_channels_cond.view(bs, nc, 1, 1)
+            else:
+                eliminate_channels = None
             input_semantics = input_label.scatter_(1, label_map, 1.0)
             if self.num_classes == 19:
                 input_semantics = input_semantics[:, :-1, :, :]
-                eliminate_channels = eliminate_channels[:, :-1, :, :]
+                if eliminate_channels is not None:
+                    eliminate_channels = eliminate_channels[:, :-1, :, :]
 
             # concatenate instance map if it exists
             if 'instance' in cond_:
@@ -429,14 +436,14 @@ class TrainLoop:
                 mask = (th.rand([input_semantics.shape[0], 1, 1, 1]) > self.drop_rate).float()
                 input_semantics = input_semantics * mask
         else:
-            assert self.args.condition == "layout"
+            assert self.args.condition in ["layout", "layout+boundary"]
             input_semantics = label_map
             eliminate_channels = eliminate_channels_cond
         cond = {key: value for key, value in cond_.items() if key not in ['label', 'instance', 'path', 'label_ori']}
         cond['y'] = input_semantics
-        cond['eliminate_channels'] = eliminate_channels
-        
-        
+        if eliminate_channels is not None:
+            cond['eliminate_channels'] = eliminate_channels
+
         return cond
 
     def get_edges(self, t):

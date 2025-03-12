@@ -13,6 +13,7 @@ from guided_diffusion.script_util import (
     sr_create_model_and_diffusion,
     args_to_dict,
     add_dict_to_argparser,
+    process_argements,
 )
 from guided_diffusion.train_util import TrainLoop
 
@@ -23,7 +24,7 @@ def count_parameters(model):
 
 def main():
     args = create_argparser().parse_args()
-
+    process_argements(args)
     dist_util.setup_dist()
     logger.configure(dir=args.save_dir, format_strs=["stdout", "log", "tensorboard", 'csv'])
 
@@ -108,6 +109,7 @@ def create_argparser():
         random_sample=False,  # 随机对输入图像进行颜色采样
         sample_level=-1,  # 颜色采样等级，每个等级表示 0.01%，-1 表示不进行采样
         eliminate_channels_assist=False,  # 在掩蔽时，是否用掩蔽信息辅助生成
+        other_folder="",  # 其他路径，在多层级语义中指完整语义分割图的路径，以模拟 layout 结合 boundary 的效果
     )
     defaults.update(sr_model_and_diffusion_defaults())
     parser = argparse.ArgumentParser()

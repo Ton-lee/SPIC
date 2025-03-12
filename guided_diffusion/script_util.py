@@ -4,6 +4,7 @@ import inspect
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
 from .unet import SuperResModel, UNetModel, EncoderUNetModel
+from .unet_assist import SuperResModel_assist, UNetModel_assist, EncoderUNetModel_assist
 
 NUM_CLASSES = 1000
 
@@ -325,6 +326,7 @@ def sr_create_model_and_diffusion(
     resblock_updown,
     use_fp16,
     use_new_attention_order,
+    eliminate_channels_assist=False,
 ):
     model = sr_create_model(
         large_size,
@@ -348,6 +350,7 @@ def sr_create_model_and_diffusion(
         use_fp16=use_fp16,
         use_new_attention_order=use_new_attention_order,
         no_instance=no_instance,
+        eliminate_assist=eliminate_channels_assist
     )
     diffusion = create_gaussian_diffusion(
         steps=diffusion_steps,
@@ -385,6 +388,7 @@ def sr_create_model(
     use_fp16=False,
     use_new_attention_order=False,
     no_instance=False,
+    eliminate_assist=False
 ):
     _ = small_size  # hack to prevent unused variable
     _ = large_size
@@ -410,26 +414,48 @@ def sr_create_model(
 
     num_classes = num_classes if no_instance else num_classes + 1
 
-    return SuperResModel(
-            image_size=image_size,
-            in_channels=3, # It changes automatically to 6
-            model_channels=num_channels,
-            out_channels=(3 if not learn_sigma else 6),
-            num_res_blocks=num_res_blocks,
-            attention_resolutions=tuple(attention_ds),
-            dropout=dropout,
-            channel_mult=channel_mult,
-            # num_classes=(num_classes if class_cond else None),
-            num_classes=num_classes,  # 这里如果置为 None 会引发更多问题
-            use_checkpoint=use_checkpoint,
-            use_fp16=use_fp16,
-            num_heads=num_heads,
-            num_head_channels=num_head_channels,
-            num_heads_upsample=num_heads_upsample,
-            use_scale_shift_norm=use_scale_shift_norm,
-            resblock_updown=resblock_updown,
-            use_new_attention_order=use_new_attention_order,
-    )
+    if not eliminate_assist:
+        return SuperResModel(
+                image_size=image_size,
+                in_channels=3, # It changes automatically to 6
+                model_channels=num_channels,
+                out_channels=(3 if not learn_sigma else 6),
+                num_res_blocks=num_res_blocks,
+                attention_resolutions=tuple(attention_ds),
+                dropout=dropout,
+                channel_mult=channel_mult,
+                # num_classes=(num_classes if class_cond else None),
+                num_classes=num_classes,  # 这里如果置为 None 会引发更多问题
+                use_checkpoint=use_checkpoint,
+                use_fp16=use_fp16,
+                num_heads=num_heads,
+                num_head_channels=num_head_channels,
+                num_heads_upsample=num_heads_upsample,
+                use_scale_shift_norm=use_scale_shift_norm,
+                resblock_updown=resblock_updown,
+                use_new_attention_order=use_new_attention_order,
+        )
+    else:
+        return SuperResModel_assist(
+                image_size=image_size,
+                in_channels=3, # It changes automatically to 6
+                model_channels=num_channels,
+                out_channels=(3 if not learn_sigma else 6),
+                num_res_blocks=num_res_blocks,
+                attention_resolutions=tuple(attention_ds),
+                dropout=dropout,
+                channel_mult=channel_mult,
+                # num_classes=(num_classes if class_cond else None),
+                num_classes=num_classes,  # 这里如果置为 None 会引发更多问题
+                use_checkpoint=use_checkpoint,
+                use_fp16=use_fp16,
+                num_heads=num_heads,
+                num_head_channels=num_head_channels,
+                num_heads_upsample=num_heads_upsample,
+                use_scale_shift_norm=use_scale_shift_norm,
+                resblock_updown=resblock_updown,
+                use_new_attention_order=use_new_attention_order,
+        )
     
 
 def create_gaussian_diffusion(
@@ -500,3 +526,39 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError("boolean value expected")
+
+
+def find_integer_after_char(s, char):
+    # 分割字符串
+    parts = s.split(char)
+    if len(parts) > 1:
+        # 获取指定字符后的部分
+        after_char = parts[1]
+        # 提取整数
+        number = ''.join(filter(str.isdigit, after_char))
+        if number:
+            return int(number)
+    return None
+
+
+def process_argements(args):
+    if "+" not in args.condition or args.random_eliminate:
+        return
+    assert args.other_folder, f"Argument other_folder ({args.other_folder}) must be a valid folder"
+    conditions = args.condition.split("+")
+    eliminate_levels = {}
+    if "layout" in conditions:
+        assert "L" in args.eliminate_level
+        layout_level = find_integer_after_char(args.eliminate_level, "L")
+        if layout_level:
+            eliminate_levels["layout"] = layout_level
+        else:
+            raise ValueError(f"Invalid layout eliminating level in {args.eliminate_level}")
+    if "boundary" in conditions:
+        assert "B" in args.eliminate_level
+        boundary_level = find_integer_after_char(args.eliminate_level, "B")
+        if boundary_level:
+            eliminate_levels["boundary"] = boundary_level
+        else:
+            raise ValueError(f"Invalid boundary eliminating level in {args.eliminate_level}")
+    args.eliminate_level = eliminate_levels
