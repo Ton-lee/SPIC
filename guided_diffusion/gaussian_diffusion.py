@@ -542,6 +542,8 @@ class GaussianDiffusion:
             model_kwargs['y'] = model_kwargs['y'].to(device)
         if 'compressed' in model_kwargs:
             model_kwargs['compressed'] = model_kwargs['compressed'].to(device)
+        if "eliminate_channels" in model_kwargs:
+            model_kwargs['eliminate_channels'] = model_kwargs['eliminate_channels'].to(device)
         indices = list(range(self.num_timesteps))[::-1]
 
         if progress:

@@ -165,14 +165,44 @@ class SPADEGroupNorm(nn.Module):
             nn.Conv2d(label_nc, nhidden, kernel_size=3, padding=1),
             nn.ReLU()
         )
-        self.mlp_eliminate = nn.Sequential(
-            nn.Conv2d(label_nc, nhidden, kernel_size=1, padding=0),
-            nn.Sigmoid()
-        )
+        # method = "3layer"
+        self.method = "3layer"
+        if self.method == "3layer":
+            self.mlp_eliminate = nn.Sequential(
+                nn.Conv2d(label_nc, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(nhidden, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(nhidden, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+            )
+        elif self.method == "add":
+            self.mlp_eliminate1 = nn.Sequential(
+                nn.Conv2d(label_nc, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(nhidden, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(nhidden, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+            )
+            self.mlp_eliminate2 = nn.Sequential(
+                nn.Conv2d(label_nc, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(nhidden, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+                nn.Conv2d(nhidden, nhidden, kernel_size=1, padding=0),
+                nn.ReLU(),
+            )
+        else:
+            self.mlp_eliminate = nn.Sequential(
+                nn.Conv2d(label_nc, nhidden, kernel_size=1, padding=0),
+                nn.Sigmoid()
+            )
         self.mlp_gamma = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
         self.mlp_beta = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
 
     def forward(self, x, segmap, eliminate_channels):
+        # print(eliminate_channels.shape)
         # Part 1. generate parameter-free normalized activations
         x = self.norm(x)
 
@@ -180,9 +210,19 @@ class SPADEGroupNorm(nn.Module):
         segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
         actv = self.mlp_shared(segmap)
         if eliminate_channels is not None:
-            weights = self.mlp_eliminate(eliminate_channels)
-            gamma = self.mlp_gamma(actv * weights)
-            beta = self.mlp_beta(actv * weights)
+            if self.method == "3layer":
+                weights = self.mlp_eliminate(eliminate_channels)
+                gamma = self.mlp_gamma(actv * weights)
+                beta = self.mlp_beta(actv * weights)
+            elif self.method == "add":
+                weights = self.mlp_eliminate1(eliminate_channels)
+                bias = self.mlp_eliminate2(eliminate_channels)
+                gamma = self.mlp_gamma(actv * weights + bias)
+                beta = self.mlp_beta(actv * weights + bias)
+            else:
+                weights = self.mlp_eliminate(eliminate_channels)
+                gamma = self.mlp_gamma(actv * weights)
+                beta = self.mlp_beta(actv * weights)
         else:
             gamma = self.mlp_gamma(actv)
             beta = self.mlp_beta(actv)

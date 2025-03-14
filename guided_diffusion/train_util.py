@@ -404,7 +404,7 @@ class TrainLoop:
         # create one-hot label map
         label_map = cond_['label']
         if 'eliminate_semantics' in cond_:
-            eliminate_channels_cond = cond_['eliminate_semantics'][:, :, None, None].long()
+            eliminate_channels_cond = cond_['eliminate_semantics'][:, :, None].long()
         else:
             eliminate_channels_cond = None
         bs, _, h, w = label_map.size()

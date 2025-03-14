@@ -1,5 +1,6 @@
 import argparse
 import inspect
+import re
 
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps
@@ -288,6 +289,7 @@ def sr_model_and_diffusion_defaults():
     res["image_path"] = ""
     res["generated_semantic"] = ""
     res["coarse_path"] = ""
+    res["eliminate_channels_assist"] = False
         
     return res
 
@@ -328,6 +330,7 @@ def sr_create_model_and_diffusion(
     use_new_attention_order,
     eliminate_channels_assist=False,
 ):
+    print(eliminate_channels_assist)
     model = sr_create_model(
         large_size,
         small_size,
@@ -415,6 +418,7 @@ def sr_create_model(
     num_classes = num_classes if no_instance else num_classes + 1
 
     if not eliminate_assist:
+        print("Loading model without eliminate assistance")
         return SuperResModel(
                 image_size=image_size,
                 in_channels=3, # It changes automatically to 6
@@ -436,6 +440,7 @@ def sr_create_model(
                 use_new_attention_order=use_new_attention_order,
         )
     else:
+        print("Loading model with eliminate assistance")
         return SuperResModel_assist(
                 image_size=image_size,
                 in_channels=3, # It changes automatically to 6
@@ -507,7 +512,10 @@ def add_dict_to_argparser(parser, default_dict):
             v_type = str
         elif isinstance(v, bool):
             v_type = str2bool
-        parser.add_argument(f"--{k}", default=v, type=v_type)
+        if k != "eliminate_level":
+            parser.add_argument(f"--{k}", default=v, type=v_type)
+        else:
+            parser.add_argument(f"--{k}", default=v)
 
 
 def args_to_dict(args, keys):
@@ -529,20 +537,22 @@ def str2bool(v):
 
 
 def find_integer_after_char(s, char):
-    # 分割字符串
-    parts = s.split(char)
-    if len(parts) > 1:
-        # 获取指定字符后的部分
-        after_char = parts[1]
-        # 提取整数
-        number = ''.join(filter(str.isdigit, after_char))
-        if number:
-            return int(number)
+    # 确保字符串中包含指定字符
+    if char in s:
+        # 只分割一次，获取 char 之后的部分
+        after_char = s.split(char, 1)[1]
+        # 用正则表达式匹配第一个连续的整数
+        match = re.search(r'\d+', after_char)
+        if match:
+            return int(match.group())  # 提取匹配到的整数
     return None
 
 
 def process_argements(args):
-    if "+" not in args.condition or args.random_eliminate:
+    if args.random_eliminate:
+        return
+    if "+" not in args.condition:
+        args.eliminate_level = int(args.eliminate_level)
         return
     assert args.other_folder, f"Argument other_folder ({args.other_folder}) must be a valid folder"
     conditions = args.condition.split("+")
@@ -550,14 +560,14 @@ def process_argements(args):
     if "layout" in conditions:
         assert "L" in args.eliminate_level
         layout_level = find_integer_after_char(args.eliminate_level, "L")
-        if layout_level:
+        if layout_level is not None:
             eliminate_levels["layout"] = layout_level
         else:
             raise ValueError(f"Invalid layout eliminating level in {args.eliminate_level}")
     if "boundary" in conditions:
         assert "B" in args.eliminate_level
         boundary_level = find_integer_after_char(args.eliminate_level, "B")
-        if boundary_level:
+        if boundary_level is not None:
             eliminate_levels["boundary"] = boundary_level
         else:
             raise ValueError(f"Invalid boundary eliminating level in {args.eliminate_level}")

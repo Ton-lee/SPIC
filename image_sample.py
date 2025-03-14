@@ -165,7 +165,7 @@ def main():
                                 os.path.join(image_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
             tv.utils.save_image(sample[j],
                                 os.path.join(sample_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-            if args.condition != "layout":
+            if args.condition not in ["layout", "layout+boundary"]:
                 tv.utils.save_image(label[j] * 255.0 / 35.0,  # 0~18 的标签和 255，保存为以 7 为灰度间隔方便可视化
                                     os.path.join(label_path, video_name, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
         if args.series:
@@ -229,6 +229,10 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
 
     # create one-hot label map
     label_map = comp_['label']
+    if 'eliminate_semantics' in comp_:
+        eliminate_channels_cond = comp_['eliminate_semantics'][:, :, None].long()
+    else:
+        eliminate_channels_cond = None
     bs, _, h, w = label_map.size()
     if num_classes == 19:
         nc = num_classes + 1
@@ -236,9 +240,15 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
         nc = num_classes
     if args.condition in ["ssm", "boundary", "sketch"]:
         input_label = th.FloatTensor(bs, nc, h, w).zero_()
+        if eliminate_channels_cond is not None:
+            eliminate_channels = eliminate_channels_cond.view(bs, nc, 1, 1)
+        else:
+            eliminate_channels = None
         input_semantics = input_label.scatter_(1, label_map, 1.0)
         if num_classes == 19:
             input_semantics = input_semantics[:, :-1, :, :]
+            if eliminate_channels is not None:
+                eliminate_channels = eliminate_channels[:, :-1, :, :]
 
             # concatenate instance map if it exists
         if 'instance' in comp_:
@@ -246,15 +256,15 @@ def preprocess_input(image, comp_, num_classes, large_size, small_size, compress
             instance_edge_map = get_edges(inst_map)
             input_semantics = th.cat((input_semantics, instance_edge_map), dim=1)
     else:
-        assert args.condition == "layout"
+        assert args.condition in ["layout", "layout+boundary"]
         input_semantics = label_map
-
-
+        eliminate_channels = eliminate_channels_cond
 
     cond = {key: value for key, value in comp_.items() if
             key not in ['label', 'instance', 'path', 'label_ori', 'coarse']}
     cond['y'] = input_semantics
-
+    if eliminate_channels is not None:
+        cond['eliminate_channels'] = eliminate_channels
     if 'coarse' in comp_:
         cond["compressed"] = comp_["coarse"]
     else:
