@@ -166,7 +166,7 @@ class SPADEGroupNorm(nn.Module):
             nn.ReLU()
         )
         # method = "3layer"
-        self.method = "3layer"
+        self.method = "add"
         if self.method == "3layer":
             self.mlp_eliminate = nn.Sequential(
                 nn.Conv2d(label_nc, nhidden, kernel_size=1, padding=0),

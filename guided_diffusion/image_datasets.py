@@ -395,7 +395,10 @@ class ImageDataset(Dataset):
                 out_dict['eliminate_level'] = num_to_eliminate
             else:
                 out_dict['eliminate_level'] = self.args.eliminate_level
-            eliminate_semantics = self.semantic_priority[-out_dict['eliminate_level']:]  # 掩蔽不重要的几种语义
+            if out_dict['eliminate_level'] > 0:
+                eliminate_semantics = self.semantic_priority[-out_dict['eliminate_level']:]  # 掩蔽不重要的几种语义
+            else:
+                eliminate_semantics = []
             for idx in eliminate_semantics:
                 arr_class[:, :, idx] = 0
             eliminate_semantics_array = np.ones((self.num_classes, 1))
@@ -414,11 +417,17 @@ class ImageDataset(Dataset):
                 out_dict['eliminate_level'] = self.args.eliminate_level
             full_sem = convert_to_full_sem(other_class, self.num_classes + 1)[:, :, :-1]
             # 将被掩蔽 boundary 的通道置为 layout 信息
-            eliminate_semantics_boundary = self.semantic_priority[-out_dict['eliminate_level']["boundary"]:]
+            if out_dict['eliminate_level']["boundary"] > 0:
+                eliminate_semantics_boundary = self.semantic_priority[-out_dict['eliminate_level']["boundary"]:]
+            else:
+                eliminate_semantics_boundary = []
             for idx in eliminate_semantics_boundary:
                 full_sem[:, :, idx] = arr_class[:, :, idx]
             # 将被掩蔽 layout 的通道置为 0
-            eliminate_semantics_layout = self.semantic_priority[-out_dict['eliminate_level']["layout"]:]
+            if out_dict['eliminate_level']["layout"] > 0:
+                eliminate_semantics_layout = self.semantic_priority[-out_dict['eliminate_level']["layout"]:]
+            else:
+                eliminate_semantics_layout = []
             for idx in eliminate_semantics_layout:
                 full_sem[:, :, idx] = 0
             arr_class = full_sem
@@ -426,7 +435,7 @@ class ImageDataset(Dataset):
             for idx in eliminate_semantics_layout:
                 eliminate_semantics_array[idx, 0] = 0
             for idx in eliminate_semantics_boundary:
-                eliminate_semantics_array[idx, 0] = 0
+                eliminate_semantics_array[idx, 1] = 0
         if self.args.eliminate_channels_assist:  # 通过该元素的存在与否判断是否具有掩蔽语义信息辅助
             out_dict['eliminate_semantics'] = eliminate_semantics_array
 
